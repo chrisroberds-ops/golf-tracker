@@ -231,6 +231,21 @@ var Module = {
   }
   .error-box.show{ display:block; }
 
+  .shot-status{
+    font-size:12px; font-weight:700; letter-spacing:.06em;
+    color:var(--chalk-dim);
+    background:rgba(255,255,255,0.04);
+    border:1px solid rgba(241,240,232,0.1);
+    border-radius:6px; padding:9px 12px;
+    margin-top:10px; text-align:center;
+    min-height:36px; display:flex; align-items:center; justify-content:center;
+    transition:color .2s, border-color .2s, background .2s;
+  }
+  .shot-status.armed  { color:var(--ok);      border-color:rgba(76,154,106,0.4);  background:rgba(76,154,106,0.08); }
+  .shot-status.active { color:var(--sand);    border-color:rgba(201,166,107,0.4); background:rgba(201,166,107,0.08); }
+  .shot-status.reject { color:var(--flag-red);border-color:rgba(196,67,47,0.4);   background:rgba(196,67,47,0.08); }
+  .shot-status.result { color:var(--chalk);   border-color:rgba(241,240,232,0.25);background:rgba(255,255,255,0.06); }
+
   /* ======================================================
      GAME VIEW
      Lifted from golf_green_prototype.html — no logic changes.
@@ -501,6 +516,8 @@ var Module = {
 
       <button class="btn" id="detectToggle" disabled>Start Detection</button>
 
+      <div class="shot-status" id="shotStatus">Waiting for shot…</div>
+
       <div class="metrics">
         <div class="metric">
           <div class="metric-label">Ball found</div>
@@ -525,9 +542,10 @@ var Module = {
       </div>
 
       <div class="note">
-        Gate #2: tap the preview to sample the ball color, adjust the
-        sliders, then click Start Detection. OpenCV.js contour detection
-        will draw a green bounding box around the largest matching blob.
+        Gate #3: hold the ball still in frame for ~0.5s to set the resting
+        position, then swing. The tracker captures frames from motion start
+        through ball exit and fits a linear regression across all of them.
+        Fewer than 4 valid frames → shot rejected, try again.
       </div>
     </div>
 
@@ -639,6 +657,7 @@ const cam = {
   resMetric:    document.getElementById('resMetric'),
   fpsMetric:    document.getElementById('fpsMetric'),
   cvTimeMetric: document.getElementById('cvTimeMetric'),
+  shotStatus:   document.getElementById('shotStatus'),
 };
 
 let currentStream = null;
@@ -668,7 +687,294 @@ function ensureBoundMats() {
   _boundLow2  = new cv.Mat(DETECT_H, DETECT_W, cv.CV_8UC3);
   _boundHigh2 = new cv.Mat(DETECT_H, DETECT_W, cv.CV_8UC3);
 }
-// fpsFrames/fpsLast removed — camera FPS is now measured per video frame, not per rAF tick
+/* =====================================================================
+   GATE #3 — SHOT DETECTION & REGRESSION-BASED VELOCITY ESTIMATION
+   ===================================================================== */
+
+/*
+ * Linear regression (least squares): fit y = slope*t + intercept over the
+ * given parallel arrays. Returns slope, intercept, and R² (goodness of fit).
+ * Pure function — no side effects, testable with synthetic data.
+ *
+ * Brief constraint: do NOT compute velocity from just two frames. At 30fps a
+ * 1-2px detection jitter swings the result wildly. Fit across all samples and
+ * use the slope of the fitted line, not raw frame-to-frame deltas.
+ */
+function linReg(ys, ts) {
+  const n = ys.length;
+  if (n < 2) return { slope: 0, intercept: ys[0] ?? 0, r2: 0 };
+
+  let sumT = 0, sumY = 0, sumTT = 0, sumTY = 0;
+  for (let i = 0; i < n; i++) {
+    sumT  += ts[i];
+    sumY  += ys[i];
+    sumTT += ts[i] * ts[i];
+    sumTY += ts[i] * ys[i];
+  }
+  const denom = n * sumTT - sumT * sumT;
+  if (Math.abs(denom) < 1e-12) return { slope: 0, intercept: sumY / n, r2: 0 };
+
+  const slope     = (n * sumTY - sumT * sumY) / denom;
+  const intercept = (sumY - slope * sumT) / n;
+
+  // R² = 1 − SS_res / SS_tot
+  const meanY = sumY / n;
+  let ssTot = 0, ssRes = 0;
+  for (let i = 0; i < n; i++) {
+    ssTot += (ys[i] - meanY) ** 2;
+    ssRes += (ys[i] - (slope * ts[i] + intercept)) ** 2;
+  }
+  const r2 = ssTot < 1e-12 ? 1 : Math.max(0, 1 - ssRes / ssTot);
+
+  return { slope, intercept, r2 };
+}
+
+/*
+ * Fit a shot from an array of { cx, cy, t } samples (pixel coords, t in seconds).
+ * Returns null and a reason string if the shot is invalid (too few samples, etc.).
+ *
+ * Output:
+ *   vx, vy        — fitted velocity in px/s (positive-x = right, positive-y = DOWN
+ *                   in image coordinates — caller inverts y for physics)
+ *   angleDeg      — launch angle in degrees above horizontal (positive = upward)
+ *                   NOTE: because image-y is inverted, a ball moving up in frame
+ *                   has negative vy from regression — we negate before atan2
+ *   speedPxPerSec — magnitude of velocity vector in px/s
+ *   r2x, r2y      — goodness-of-fit for each axis (diagnostic, not used for gating)
+ *   frameCount    — how many valid samples went into the fit
+ *
+ * Brief constraint: discard shots with fewer than 4 valid frames rather than
+ * reporting a number from too little data. Tuned for 30fps / 4-5 usable frames
+ * minimum, not 8+.
+ */
+function fitShot(samples) {
+  const MIN_FRAMES = 4;
+  if (samples.length < MIN_FRAMES) {
+    return { ok: false, reason: `Only ${samples.length} frame${samples.length === 1 ? '' : 's'} captured — need at least ${MIN_FRAMES}. Try again.` };
+  }
+
+  const xs = samples.map(s => s.cx);
+  const ys = samples.map(s => s.cy);
+  const ts = samples.map(s => s.t);
+
+  const fitX = linReg(xs, ts);
+  const fitY = linReg(ys, ts);
+
+  const vx = fitX.slope;  // px/s rightward
+  const vy = fitY.slope;  // px/s downward in image coords
+
+  // Image y increases downward; a real upward launch is negative vy.
+  // Negate vy so positive angleDeg = upward, matching physical intuition.
+  const angleDeg      = Math.atan2(-vy, Math.abs(vx)) * 180 / Math.PI;
+  const speedPxPerSec = Math.hypot(vx, vy);
+
+  return {
+    ok: true,
+    vx, vy,
+    angleDeg,
+    speedPxPerSec,
+    r2x: fitX.r2,
+    r2y: fitY.r2,
+    frameCount: samples.length,
+  };
+}
+
+/*
+ * Self-test: verify linReg and fitShot with synthetic data.
+ * Runs once at startup, logs results to console. Does not touch the DOM.
+ * At 30fps, 5 frames span 133ms — minimum useful shot length on this hardware.
+ *
+ * "Cannot swing a real club in a screenshot" (brief Gate #3 requirement) —
+ * these tests are the substitute.
+ */
+(function selfTestRegressionMath() {
+  // --- linReg tests ---
+  // Perfect horizontal line: slope=0
+  { const r = linReg([10,10,10,10,10], [0,1,2,3,4]);
+    console.assert(Math.abs(r.slope) < 0.001,      'linReg: flat slope should be ~0');
+    console.assert(Math.abs(r.r2 - 1) < 0.001,     'linReg: flat line r²=1'); }
+
+  // Perfect linear: y = 3t + 5
+  { const ts = [0, 0.033, 0.067, 0.1, 0.133];
+    const ys = ts.map(t => 3*t + 5);
+    const r  = linReg(ys, ts);
+    console.assert(Math.abs(r.slope - 3) < 0.01,   'linReg: slope=3 recovered');
+    console.assert(Math.abs(r.intercept - 5) < 0.1,'linReg: intercept=5 recovered');
+    console.assert(Math.abs(r.r2 - 1) < 0.001,     'linReg: perfect fit r²=1'); }
+
+  // Noisy linear: slope still recoverable
+  { const ts  = [0, 0.033, 0.067, 0.1, 0.133, 0.167];
+    const base = ts.map(t => 50*t + 20);
+    const noisy = base.map((y, i) => y + [0.5, -0.8, 0.3, -0.4, 0.6, -0.2][i]);
+    const r = linReg(noisy, ts);
+    console.assert(Math.abs(r.slope - 50) < 3,     'linReg: noisy slope within 3 of 50');
+    console.assert(r.r2 > 0.95,                     'linReg: noisy r²>0.95 (±0.8px noise on 8px range → expect ~0.97)'); }
+
+  // --- fitShot tests ---
+  // Too few samples → rejected
+  { const r = fitShot([{cx:100,cy:80,t:0},{cx:110,cy:75,t:0.033},{cx:120,cy:70,t:0.067}]);
+    console.assert(!r.ok,                            'fitShot: 3 samples → rejected'); }
+
+  // Exactly 4 samples, clean rightward + upward trajectory
+  // Ball moves right 200px/s, up 150px/s (vy=-150 in image coords) over 4 frames at 30fps
+  { const ts = [0, 0.033, 0.067, 0.1];
+    const samples = ts.map(t => ({ cx: 50 + 200*t, cy: 80 - 150*t, t }));
+    const r = fitShot(samples);
+    console.assert(r.ok,                             'fitShot: 4 clean samples → accepted');
+    console.assert(Math.abs(r.vx - 200) < 5,        'fitShot: vx≈200 px/s');
+    console.assert(Math.abs(r.vy - (-150)) < 5,     'fitShot: vy≈-150 px/s (upward in image)');
+    console.assert(r.angleDeg > 30 && r.angleDeg < 40, 'fitShot: angle 30-40° for 200/150 vector');
+    console.assert(r.frameCount === 4,               'fitShot: frameCount=4'); }
+
+  // 6 noisy samples — regression should still give reasonable angle
+  { const ts = [0, 0.033, 0.067, 0.1, 0.133, 0.167];
+    const noise = [1,-1,0.5,-0.5,0.8,-0.3];
+    const samples = ts.map((t, i) => ({ cx: 50 + 180*t + noise[i], cy: 75 - 120*t + noise[i], t }));
+    const r = fitShot(samples);
+    console.assert(r.ok,                             'fitShot: 6 noisy samples → accepted');
+    console.assert(r.angleDeg > 25 && r.angleDeg < 45, 'fitShot: noisy angle in plausible range');
+    console.assert(r.r2x > 0.98 && r.r2y > 0.98,   'fitShot: noisy r²>0.98 on both axes'); }
+
+  console.log('[golf-tracker] regression self-tests passed');
+})();
+
+/*
+ * Shot state machine
+ *
+ * IDLE     Ball at rest; tracking resting centroid as exponential moving average.
+ *          Transitions to SHOT when displacement from rest > MOTION_THRESHOLD.
+ *
+ * SHOT     Accumulating (cx, cy, t) samples. Transitions to COOLDOWN when
+ *          MISS_FRAMES consecutive frames have no detection.
+ *
+ * COOLDOWN Brief pause (COOLDOWN_MS) before re-arming, so the result display
+ *          is visible and detection jitter can't immediately re-trigger.
+ *
+ * All thresholds are in detection-canvas pixels (200×150 space), not overlay pixels.
+ */
+const MOTION_THRESHOLD = 8;    // px displacement from rest to trigger shot capture
+const REST_ALPHA       = 0.15; // EMA smoothing for resting position (lower = slower)
+const MISS_FRAMES      = 4;    // consecutive no-detections to end a shot
+const COOLDOWN_MS      = 1500; // ms to show result before re-arming
+const MIN_REST_FRAMES  = 10;   // frames of stable detection before we arm the trigger
+
+let shotState     = 'IDLE';  // 'IDLE' | 'SHOT' | 'COOLDOWN'
+let restX         = null;    // EMA of resting centroid x (detection-canvas coords)
+let restY         = null;
+let restFrames    = 0;       // consecutive frames the ball has been at rest
+let shotSamples   = [];      // { cx, cy, t } accumulated during SHOT
+let missCount     = 0;       // consecutive missed frames during SHOT
+let cooldownTimer = null;
+
+function setShotStatus(text, cls) {
+  cam.shotStatus.textContent = text;
+  cam.shotStatus.className   = 'shot-status' + (cls ? ' ' + cls : '');
+}
+
+/*
+ * Called from opencvDetectionTick on every camera frame, after the centroid is
+ * known (or not). cx/cy are in detection-canvas pixel space; t is video.currentTime.
+ *
+ * found=false means no ball detected this frame (below area threshold or CV error).
+ */
+function updateShotStateMachine(found, cx, cy, t) {
+  if (shotState === 'COOLDOWN') return; // result is being displayed; ignore frames
+
+  if (shotState === 'IDLE') {
+    if (!found) {
+      // Ball not visible — reset rest tracking, keep waiting
+      restX = null; restY = null; restFrames = 0;
+      setShotStatus('Hold ball still in frame to arm…', '');
+      return;
+    }
+
+    // Update resting EMA
+    if (restX === null) { restX = cx; restY = cy; }
+    restX = restX + REST_ALPHA * (cx - restX);
+    restY = restY + REST_ALPHA * (cy - restY);
+    const disp = Math.hypot(cx - restX, cy - restY);
+
+    if (disp > MOTION_THRESHOLD) {
+      // Ball broke the threshold — but only trigger if we've had a stable resting read
+      if (restFrames >= MIN_REST_FRAMES) {
+        shotState   = 'SHOT';
+        shotSamples = [{ cx, cy, t }];
+        missCount   = 0;
+        setShotStatus('Shot in progress…', 'active');
+      } else {
+        // Not enough stable rest frames yet — reset and wait (avoids triggering on
+        // the ball being placed into frame)
+        restX = cx; restY = cy; restFrames = 0;
+      }
+    } else {
+      restFrames++;
+      if (restFrames >= MIN_REST_FRAMES) {
+        setShotStatus('Armed — swing when ready', 'armed');
+      } else {
+        setShotStatus(`Hold still… (${restFrames}/${MIN_REST_FRAMES})`, '');
+      }
+    }
+    return;
+  }
+
+  if (shotState === 'SHOT') {
+    if (found) {
+      shotSamples.push({ cx, cy, t });
+      missCount = 0;
+      setShotStatus(`Tracking… (${shotSamples.length} frames)`, 'active');
+    } else {
+      missCount++;
+      if (missCount >= MISS_FRAMES) {
+        // Ball has left frame / hit net — finalize shot
+        finalizeShotCapture();
+      }
+    }
+    return;
+  }
+}
+
+function finalizeShotCapture() {
+  shotState = 'COOLDOWN';
+  const result = fitShot(shotSamples);
+
+  if (!result.ok) {
+    setShotStatus(result.reason, 'reject');
+    console.log('[golf-tracker] shot rejected:', result.reason, shotSamples);
+  } else {
+    const a = result.angleDeg.toFixed(1);
+    const s = result.speedPxPerSec.toFixed(0);
+    const msg = `${result.frameCount} frames · ${a}° · ${s} px/s`;
+    setShotStatus(msg, 'result');
+    console.log('[golf-tracker] shot result:', result);
+    // Gate #5 integration point: pass result to physics → recordShot()
+    onShotResult(result);
+  }
+
+  // Re-arm after cooldown
+  if (cooldownTimer) clearTimeout(cooldownTimer);
+  cooldownTimer = setTimeout(() => {
+    shotState  = 'IDLE';
+    restX      = null; restY = null; restFrames = 0;
+    shotSamples = []; missCount = 0;
+    setShotStatus('Hold ball still in frame to arm…', '');
+  }, COOLDOWN_MS);
+}
+
+/*
+ * Gate #5 integration point — stub for now.
+ * Receives the fitShot result; Gate #5 runs physics on it and calls recordShot().
+ * Not wiring physics yet — that's Gate #4/5.
+ */
+function onShotResult(result) {
+  // Stub: log the raw tracking output. Physics integration in Gate #4/5.
+  console.log('[golf-tracker] onShotResult (stub):', {
+    angleDeg:      result.angleDeg.toFixed(2),
+    speedPxPerSec: result.speedPxPerSec.toFixed(1),
+    frameCount:    result.frameCount,
+    r2x:           result.r2x.toFixed(3),
+    r2y:           result.r2y.toFixed(3),
+  });
+}
 
 function showCameraError(msg) {
   cam.errorBox.textContent = msg;
@@ -987,6 +1293,10 @@ function opencvDetectionTick() {
     const found = bestIdx >= 0 && bestArea > 20;
     cam.foundMetric.textContent = found ? 'Yes' : 'No';
 
+    // Detection-canvas centroid (used by state machine — stays in 200×150 space
+    // so thresholds are consistent regardless of overlay display size)
+    let detCx = null, detCy = null;
+
     if (found) {
       const rect = cv.boundingRect(contours.get(bestIdx));
       const sx = cam.overlay.width / DETECT_W, sy = cam.overlay.height / DETECT_H;
@@ -997,20 +1307,29 @@ function opencvDetectionTick() {
       octx.lineWidth   = 2;
       octx.strokeRect(bx, by, bw, bh);
 
-      const cx = Math.round(bx + bw / 2), cy = Math.round(by + bh / 2);
+      // Overlay centroid for display
+      const ocx = Math.round(bx + bw / 2), ocy = Math.round(by + bh / 2);
       octx.beginPath();
-      octx.arc(cx, cy, 4, 0, Math.PI * 2);
+      octx.arc(ocx, ocy, 4, 0, Math.PI * 2);
       octx.fillStyle = '#4C9A6A';
       octx.fill();
 
-      cam.centerMetric.textContent = `${cx}, ${cy}`;
+      cam.centerMetric.textContent = `${ocx}, ${ocy}`;
       cam.widthMetric.textContent  = Math.round(bw) + ' px';
       cam.pxMetric.textContent     = Math.round(bestArea);
+
+      // Detection-canvas centroid (native 200×150 coords, not scaled to overlay)
+      detCx = rect.x + rect.width  / 2;
+      detCy = rect.y + rect.height / 2;
     } else {
       cam.centerMetric.textContent = '–';
       cam.widthMetric.textContent  = '–';
       cam.pxMetric.textContent     = cv.countNonZero(mask);
     }
+
+    // Feed into shot state machine using video.currentTime (seconds) as the timestamp.
+    // currentTime is monotonically increasing and frame-accurate at 30fps.
+    updateShotStateMachine(found, detCx, detCy, cam.video.currentTime);
 
   } catch (err) {
     // Log with full stack so CV type mismatches and WASM errors are visible in DevTools
@@ -1043,7 +1362,15 @@ cam.deviceSelect.addEventListener('change', () => startCamera(cam.deviceSelect.v
 cam.detectToggle.addEventListener('click', () => {
   detecting = !detecting;
   cam.detectToggle.textContent = detecting ? 'Stop Detection' : 'Start Detection';
-  if (detecting) requestAnimationFrame(opencvDetectionTick);
+  if (detecting) {
+    // Reset state machine on every fresh start
+    shotState = 'IDLE';
+    restX = null; restY = null; restFrames = 0;
+    shotSamples = []; missCount = 0;
+    if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null; }
+    setShotStatus('Hold ball still in frame to arm…', '');
+    requestAnimationFrame(opencvDetectionTick);
+  }
 });
 
 // Boot camera
