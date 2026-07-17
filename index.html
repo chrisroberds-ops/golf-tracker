@@ -653,7 +653,21 @@ let lastDetectedTime = -1; // frame dedup: only process when camera delivers a n
 const DETECT_W = 200, DETECT_H = 150;
 const detectCanvas = document.createElement('canvas');
 detectCanvas.width = DETECT_W; detectCanvas.height = DETECT_H;
-const detectCtx = detectCanvas.getContext('2d');
+// willReadFrequently: cv.imread() calls getImageData() on this canvas every tick
+const detectCtx = detectCanvas.getContext('2d', { willReadFrequently: true });
+
+// Pre-allocated inRange bound Mats — created once on first detection tick (after
+// opencvReady), then reused every tick with setTo(). Avoids per-frame WASM malloc.
+// Must be DETECT_H × DETECT_W × CV_8UC3 to match the HSV source.
+// cv.Scalar always takes 4 values regardless of the Mat's channel count.
+let _boundLow = null, _boundHigh = null, _boundLow2 = null, _boundHigh2 = null;
+function ensureBoundMats() {
+  if (_boundLow) return;
+  _boundLow   = new cv.Mat(DETECT_H, DETECT_W, cv.CV_8UC3);
+  _boundHigh  = new cv.Mat(DETECT_H, DETECT_W, cv.CV_8UC3);
+  _boundLow2  = new cv.Mat(DETECT_H, DETECT_W, cv.CV_8UC3);
+  _boundHigh2 = new cv.Mat(DETECT_H, DETECT_W, cv.CV_8UC3);
+}
 // fpsFrames/fpsLast removed — camera FPS is now measured per video frame, not per rAF tick
 
 function showCameraError(msg) {
@@ -901,9 +915,12 @@ function opencvDetectionTick() {
   // Draw into the pre-allocated 200×150 canvas — no DOM allocation per tick
   detectCtx.drawImage(cam.video, 0, 0, DETECT_W, DETECT_H);
 
-  // Declare all Mats outside try so finally can safely check before .delete()
+  // Ensure pre-allocated bound Mats exist (no-op after first tick)
+  ensureBoundMats();
+
+  // Declare all per-frame Mats outside try so finally can safely .delete() them.
+  // _bound* Mats are pre-allocated and NOT listed here — they live for the session.
   let rgba, rgb, hsv, mask, maskWrap, kernel, contours, hierarchy;
-  let lowMat, highMat, lowMat2, highMat2;
 
   const t0 = performance.now();
 
@@ -928,27 +945,24 @@ function opencvDetectionTick() {
     const hLo = Math.max(0,   h - ht);
     const hHi = Math.min(179, h + ht);
 
-    // 1×1 scalar-bound Mats — inRange broadcasts them to src size per OpenCV spec.
-    // Must be CV_8UC3 with a 3-element scalar to match the HSV source (CV_8UC3).
-    // A 4-element scalar on a 3-channel Mat throws in OpenCV.js — that was causing
-    // the try block to exit immediately (caught silently), giving a ~2ms CV time and
-    // no detection results.
-    lowMat  = new cv.Mat(1, 1, cv.CV_8UC3, [hLo, sm, vm]);
-    highMat = new cv.Mat(1, 1, cv.CV_8UC3, [hHi, 255, 255]);
-    cv.inRange(hsv, lowMat, highMat, mask);
+    // setTo() updates the pre-allocated bound Mats in-place — no malloc per tick.
+    // cv.Scalar always takes 4 values regardless of channel count (maps to cv::Scalar).
+    _boundLow.setTo(new cv.Scalar(hLo, sm, vm, 0));
+    _boundHigh.setTo(new cv.Scalar(hHi, 255, 255, 0));
+    cv.inRange(hsv, _boundLow, _boundHigh, mask);
 
     // Wrap-around: red and pink hues straddle 0°/179° in OpenCV space
     if (h - ht < 0) {
       maskWrap = new cv.Mat();
-      lowMat2  = new cv.Mat(1, 1, cv.CV_8UC3, [180 + (h - ht), sm, vm]);
-      highMat2 = new cv.Mat(1, 1, cv.CV_8UC3, [179, 255, 255]);
-      cv.inRange(hsv, lowMat2, highMat2, maskWrap);
+      _boundLow2.setTo(new cv.Scalar(180 + (h - ht), sm, vm, 0));
+      _boundHigh2.setTo(new cv.Scalar(179, 255, 255, 0));
+      cv.inRange(hsv, _boundLow2, _boundHigh2, maskWrap);
       cv.bitwise_or(mask, maskWrap, mask);
     } else if (h + ht > 179) {
       maskWrap = new cv.Mat();
-      lowMat2  = new cv.Mat(1, 1, cv.CV_8UC3, [0, sm, vm]);
-      highMat2 = new cv.Mat(1, 1, cv.CV_8UC3, [(h + ht) - 180, 255, 255]);
-      cv.inRange(hsv, lowMat2, highMat2, maskWrap);
+      _boundLow2.setTo(new cv.Scalar(0, sm, vm, 0));
+      _boundHigh2.setTo(new cv.Scalar((h + ht) - 180, 255, 255, 0));
+      cv.inRange(hsv, _boundLow2, _boundHigh2, maskWrap);
       cv.bitwise_or(mask, maskWrap, mask);
     }
 
@@ -975,7 +989,7 @@ function opencvDetectionTick() {
 
     if (found) {
       const rect = cv.boundingRect(contours.get(bestIdx));
-      const sx = cam.overlay.width / W, sy = cam.overlay.height / H;
+      const sx = cam.overlay.width / DETECT_W, sy = cam.overlay.height / DETECT_H;
       const bx = rect.x * sx, by = rect.y * sy;
       const bw = rect.width * sx, bh = rect.height * sy;
 
@@ -1004,6 +1018,7 @@ function opencvDetectionTick() {
     cam.foundMetric.textContent = 'ERR';
   } finally {
     // Every Mat must be deleted — no GC in WASM heap
+    // _bound* Mats are pre-allocated for the session — do NOT delete them here
     if (rgba)      rgba.delete();
     if (rgb)       rgb.delete();
     if (hsv)       hsv.delete();
@@ -1012,10 +1027,6 @@ function opencvDetectionTick() {
     if (kernel)    kernel.delete();
     if (contours)  contours.delete();
     if (hierarchy) hierarchy.delete();
-    if (lowMat)    lowMat.delete();
-    if (highMat)   highMat.delete();
-    if (lowMat2)   lowMat2.delete();
-    if (highMat2)  highMat2.delete();
   }
 
   // Show per-frame CV time so the user can confirm whether optimizations recovered
