@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Indoor Green — Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --turf-deep:#122A1E;
+    --turf-mid:#1B4332;
+    --turf-line:#2D6A4F;
+    --sand:#C9A66B;
+    --chalk:#F1F0E8;
+    --chalk-dim:#B9C4BA;
+    --flag-red:#C4432F;
+    --shadow-ball:rgba(0,0,0,0.35);
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; height:100%;
+    background:#08130D;
+    color:var(--chalk);
+    font-family:'Manrope',sans-serif;
+    overflow:hidden;
+  }
+  .stage{
+    position:relative;
+    width:100%; height:100vh;
+    display:flex; flex-direction:column;
+    background:
+      radial-gradient(ellipse at 50% -10%, rgba(45,106,79,0.25), transparent 60%),
+      var(--turf-deep);
+  }
+
+  /* ---------- HEADER / SCOREBOARD ---------- */
+  .scoreboard{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:22px 40px 10px;
+    z-index:5;
+  }
+  .player{
+    display:flex; flex-direction:column; gap:6px;
+    min-width:180px;
+    opacity:0.55;
+    transition:opacity .4s ease;
+  }
+  .player.active{ opacity:1; }
+  .player.p2{ align-items:flex-end; }
+  .player-name{
+    font-size:13px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--chalk-dim); font-weight:700;
+  }
+  .letters{ display:flex; gap:6px; }
+  .letters.p2{ flex-direction:row-reverse; }
+  .letter{
+    width:30px; height:36px;
+    border:1.5px solid rgba(241,240,232,0.25);
+    border-radius:4px;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Anton',sans-serif;
+    font-size:19px;
+    color:rgba(241,240,232,0.25);
+    letter-spacing:0;
+  }
+  .letter.lit{
+    color:var(--flag-red);
+    border-color:var(--flag-red);
+    background:rgba(196,67,47,0.12);
+  }
+  .center-meta{
+    text-align:center;
+  }
+  .target-label{
+    font-size:12px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--chalk-dim); margin-bottom:2px;
+  }
+  .target-yards{
+    font-family:'Anton',sans-serif;
+    font-size:30px; color:var(--sand); line-height:1;
+  }
+
+  /* ---------- GREEN ---------- */
+  .green-wrap{
+    flex:1; position:relative;
+    perspective:900px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .green{
+    position:relative;
+    width:70vw; max-width:820px; height:64vh;
+    transform:rotateX(52deg);
+    transform-style:preserve-3d;
+  }
+  .turf{
+    position:absolute; inset:0;
+    background:
+      repeating-linear-gradient(180deg,
+        var(--turf-mid) 0px, var(--turf-mid) 40px,
+        var(--turf-line) 40px, var(--turf-line) 42px),
+      var(--turf-mid);
+    border-radius:50%/12%;
+    box-shadow:0 0 0 3px rgba(241,240,232,0.06), 0 40px 90px rgba(0,0,0,0.55);
+  }
+  .ring{
+    position:absolute;
+    border:2px dashed rgba(241,240,232,0.22);
+    border-radius:50%;
+    left:50%; top:78%;
+    transform:translate(-50%,-50%);
+  }
+  .ring-label{
+    position:absolute;
+    font-size:11px; color:var(--chalk-dim); letter-spacing:.08em;
+    left:50%; transform:translateX(-50%);
+    white-space:nowrap;
+  }
+  .pin{
+    position:absolute; left:50%; top:78%;
+    transform:translate(-50%,-100%);
+    display:flex; flex-direction:column; align-items:center;
+    z-index:4;
+  }
+  .flagstick{ width:3px; height:90px; background:var(--chalk-dim); }
+  .flag{
+    position:absolute; top:0; left:1.5px;
+    width:34px; height:22px;
+    background:var(--flag-red);
+    clip-path:polygon(0 0, 100% 20%, 0 100%);
+  }
+  .cup{
+    width:16px; height:8px; border-radius:50%;
+    background:#04100A;
+    box-shadow:inset 0 2px 4px rgba(0,0,0,0.8);
+    margin-top:-4px;
+  }
+
+  .ball{
+    position:absolute;
+    width:14px; height:14px; border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #fff, #d8d8d8 60%, #b7b7b7);
+    left:50%; top:100%;
+    transform:translate(-50%,-50%) scale(1);
+    box-shadow:0 0 0 rgba(0,0,0,0);
+    z-index:6;
+    opacity:0;
+  }
+  .ball-shadow{
+    position:absolute;
+    width:16px; height:6px; border-radius:50%;
+    background:var(--shadow-ball);
+    left:50%; top:100%;
+    transform:translate(-50%,0) scale(1);
+    filter:blur(1px);
+    opacity:0;
+    z-index:3;
+  }
+
+  /* ---------- FOOTER / RESULT ---------- */
+  .footer{
+    position:relative;
+    padding:18px 40px 34px;
+    display:flex; align-items:center; justify-content:center;
+    gap:28px;
+    z-index:5;
+  }
+  .result{
+    font-family:'Anton',sans-serif;
+    font-size:15px;
+    color:var(--chalk-dim);
+    letter-spacing:.04em;
+    min-height:22px;
+    text-align:center;
+  }
+  .result .big{
+    font-size:22px; color:var(--chalk);
+  }
+  .btn{
+    appearance:none; border:none; cursor:pointer;
+    font-family:'Manrope',sans-serif; font-weight:700;
+    font-size:14px; letter-spacing:.04em;
+    padding:13px 26px; border-radius:8px;
+    background:var(--flag-red); color:var(--chalk);
+    transition:transform .12s ease, background .2s ease;
+  }
+  .btn:hover{ background:#D6543F; }
+  .btn:active{ transform:scale(0.96); }
+  .btn.ghost{
+    background:transparent; color:var(--chalk-dim);
+    border:1.5px solid rgba(241,240,232,0.25);
+  }
+  .btn.ghost:hover{ color:var(--chalk); border-color:var(--chalk-dim); }
+
+  .controls-row{
+    position:absolute; top:16px; right:24px;
+    display:flex; gap:8px; z-index:8;
+  }
+  select{
+    background:rgba(255,255,255,0.06);
+    color:var(--chalk); border:1px solid rgba(241,240,232,0.25);
+    border-radius:6px; font-family:'Manrope',sans-serif; font-size:12px;
+    padding:6px 8px;
+  }
+
+  .winner-banner{
+    position:fixed; inset:0; background:rgba(8,19,13,0.92);
+    display:none; align-items:center; justify-content:center;
+    flex-direction:column; gap:18px; z-index:20;
+  }
+  .winner-banner.show{ display:flex; }
+  .winner-banner h1{
+    font-family:'Anton',sans-serif; font-size:54px; color:var(--sand); margin:0;
+  }
+
+  .note{
+    position:fixed; bottom:10px; left:50%; transform:translateX(-50%);
+    font-size:11px; color:rgba(241,240,232,0.35); letter-spacing:.05em;
+    z-index:5;
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="controls-row">
+    <select id="targetSelect">
+      <option value="20">20 yd</option>
+      <option value="30">30 yd</option>
+      <option value="40" selected>40 yd</option>
+      <option value="50">50 yd</option>
+      <option value="60">60 yd</option>
+      <option value="70">70 yd</option>
+    </select>
+  </div>
+
+  <div class="scoreboard">
+    <div class="player p1 active" id="p1box">
+      <div class="player-name" id="p1name">Player 1</div>
+      <div class="letters" id="p1letters"></div>
+    </div>
+    <div class="center-meta">
+      <div class="target-label">Target Distance</div>
+      <div class="target-yards" id="targetYards">40 YD</div>
+    </div>
+    <div class="player p2 p2" id="p2box">
+      <div class="player-name" id="p2name">Player 2</div>
+      <div class="letters p2" id="p2letters"></div>
+    </div>
+  </div>
+
+  <div class="green-wrap">
+    <div class="green" id="green">
+      <div class="turf"></div>
+      <div class="ring" id="ring5"></div>
+      <div class="ring" id="ring10"></div>
+      <div class="ring" id="ring20"></div>
+      <div class="pin">
+        <div class="flagstick"><div class="flag"></div></div>
+        <div class="cup"></div>
+      </div>
+      <div class="ball-shadow" id="ballShadow"></div>
+      <div class="ball" id="ball"></div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <button class="btn ghost" id="resetBtn">Reset Game</button>
+    <div class="result" id="result">Player 1's turn — set the standard.</div>
+    <button class="btn" id="shotBtn">Simulate Shot ⛳</button>
+  </div>
+
+  <div class="note">Demo mode — shots are simulated. Swap simulateShot() for real tracker output.</div>
+</div>
+
+<div class="winner-banner" id="winnerBanner">
+  <h1 id="winnerText">PLAYER 1 WINS</h1>
+  <button class="btn" id="playAgainBtn">Play Again</button>
+</div>
+
+<script>
+const LETTERS = ['G','O','L','F'];
+
+const state = {
+  players: ['Player 1', 'Player 2'],
+  turn: 0,          // 0 or 1
+  letters: [[], []],
+  standard: null,   // distance-to-pin in feet set by the current "setter"
+  setterIndex: 0,   // whose shot is currently the standard to beat
+  targetYards: 40
+};
+
+const els = {
+  p1box: document.getElementById('p1box'),
+  p2box: document.getElementById('p2box'),
+  p1letters: document.getElementById('p1letters'),
+  p2letters: document.getElementById('p2letters'),
+  result: document.getElementById('result'),
+  ball: document.getElementById('ball'),
+  ballShadow: document.getElementById('ballShadow'),
+  shotBtn: document.getElementById('shotBtn'),
+  resetBtn: document.getElementById('resetBtn'),
+  targetSelect: document.getElementById('targetSelect'),
+  targetYards: document.getElementById('targetYards'),
+  winnerBanner: document.getElementById('winnerBanner'),
+  winnerText: document.getElementById('winnerText'),
+  playAgainBtn: document.getElementById('playAgainBtn'),
+  ring5: document.getElementById('ring5'),
+  ring10: document.getElementById('ring10'),
+  ring20: document.getElementById('ring20'),
+};
+
+function sizeRings(){
+  const w = document.getElementById('green').clientWidth;
+  const set = (el, pct) => { el.style.width = (w*pct)+'px'; el.style.height=(w*pct*0.34)+'px'; };
+  set(els.ring5, 0.10);
+  set(els.ring10, 0.20);
+  set(els.ring20, 0.38);
+}
+window.addEventListener('resize', sizeRings);
+sizeRings();
+
+function renderLetters(){
+  [els.p1letters, els.p2letters].forEach((container, pIdx) => {
+    container.innerHTML = '';
+    LETTERS.forEach(L => {
+      const div = document.createElement('div');
+      div.className = 'letter' + (state.letters[pIdx].includes(L) ? ' lit' : '');
+      div.textContent = L;
+      container.appendChild(div);
+    });
+  });
+}
+
+function renderTurn(){
+  els.p1box.classList.toggle('active', state.turn === 0);
+  els.p2box.classList.toggle('active', state.turn === 1);
+}
+
+function renderTarget(){
+  els.targetYards.textContent = state.targetYards + ' YD';
+}
+
+els.targetSelect.addEventListener('change', e => {
+  state.targetYards = parseInt(e.target.value, 10);
+  renderTarget();
+});
+
+/* ---- Simulated shot generator (STAND-IN for real ball-tracking output) ----
+   Real integration point: call recordShot(distanceToPinFeet) with whatever
+   the tracker computes, instead of calling simulateShot(). */
+function simulateShot(){
+  // rough bell-curve-ish distance-to-pin in feet, occasionally a clean miss
+  const miss = Math.random() < 0.12;
+  if (miss) return null; // missed the green entirely
+  const base = Math.random()*Math.random()*22; // biased toward closer shots
+  return Math.round(base * 10) / 10;
+}
+
+function animateBall(distanceFeet, cb){
+  // Map distance-to-pin (0-25ft closer = deeper into green) to a landing
+  // position along the green's depth axis, with slight random left/right.
+  const green = document.getElementById('green');
+  const w = green.clientWidth, h = green.clientHeight;
+  const depthPct = Math.max(0.08, 1 - Math.min(distanceFeet,25)/25*0.85); // closer to pin = further up
+  const lateral = (Math.random()-0.5) * 0.5; // -0.25..0.25 of width
+
+  const startX = w/2, startY = h;
+  const endX = w/2 + lateral*w*0.5;
+  const endY = h*0.78 - (h*0.78)*depthPct*0 + h*(0.78 - 0.78*depthPct);
+
+  const duration = 700;
+  const startTime = performance.now();
+  els.ball.style.opacity = 1;
+  els.ballShadow.style.opacity = 1;
+
+  function frame(now){
+    const t = Math.min(1, (now-startTime)/duration);
+    const ease = 1 - Math.pow(1-t, 2);
+    const x = startX + (endX-startX)*ease;
+    const y = startY + (endY-startY)*ease;
+    const arc = Math.sin(Math.PI*t) * -120; // peak height
+    const scale = 1 - 0.4*ease;
+
+    els.ball.style.left = x + 'px';
+    els.ball.style.top = (y + arc) + 'px';
+    els.ball.style.transform = `translate(-50%,-50%) scale(${scale})`;
+
+    els.ballShadow.style.left = x + 'px';
+    els.ballShadow.style.top = y + 'px';
+    els.ballShadow.style.transform = `translate(-50%,0) scale(${1-0.3*ease})`;
+    els.ballShadow.style.opacity = 0.35 * (1-ease*0.3);
+
+    if (t < 1){
+      requestAnimationFrame(frame);
+    } else {
+      setTimeout(() => {
+        els.ball.style.opacity = 0;
+        els.ballShadow.style.opacity = 0;
+        cb && cb();
+      }, 500);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+function recordShot(distanceFeetOrNull){
+  els.shotBtn.disabled = true;
+  const shooter = state.turn;
+  const opponent = 1 - shooter;
+
+  animateBall(distanceFeetOrNull ?? 30, () => {
+    if (state.standard === null){
+      // This shot SETS the standard (or, if missed, turn passes)
+      if (distanceFeetOrNull === null){
+        els.result.innerHTML = `${state.players[shooter]} missed the green. Turn passes.`;
+        state.turn = opponent;
+      } else {
+        state.standard = distanceFeetOrNull;
+        state.setterIndex = shooter;
+        els.result.innerHTML = `${state.players[shooter]} sets the standard: <span class="big">${distanceFeetOrNull} ft</span> from the pin.`;
+        state.turn = opponent;
+      }
+    } else {
+      // This shot must beat the standard
+      const beat = distanceFeetOrNull !== null && distanceFeetOrNull < state.standard;
+      if (beat){
+        els.result.innerHTML = `${state.players[shooter]} beats it — <span class="big">${distanceFeetOrNull} ft</span>. New standard set!`;
+        state.standard = distanceFeetOrNull;
+        state.setterIndex = shooter;
+        state.turn = opponent;
+      } else {
+        const letterIdx = state.letters[shooter].length;
+        if (letterIdx < LETTERS.length){
+          state.letters[shooter].push(LETTERS[letterIdx]);
+        }
+        const missText = distanceFeetOrNull === null ? 'missed the green entirely' : `only got ${distanceFeetOrNull} ft (needed under ${state.standard} ft)`;
+        els.result.innerHTML = `${state.players[shooter]} ${missText} — gets a letter.`;
+        renderLetters();
+
+        if (state.letters[shooter].length >= LETTERS.length){
+          showWinner(state.players[opponent]);
+        } else {
+          // standard stays; same setter's shot remains the target, next player up
+          state.turn = opponent === state.setterIndex ? shooter : opponent;
+          // simplest rule: alternate turns regardless, standard persists until beaten
+          state.turn = 1 - shooter;
+        }
+      }
+    }
+    renderTurn();
+    els.shotBtn.disabled = false;
+  });
+}
+
+function showWinner(name){
+  els.winnerText.textContent = name.toUpperCase() + ' WINS';
+  els.winnerBanner.classList.add('show');
+}
+
+function resetGame(){
+  state.turn = 0;
+  state.letters = [[], []];
+  state.standard = null;
+  state.setterIndex = 0;
+  renderLetters();
+  renderTurn();
+  els.result.textContent = "Player 1's turn — set the standard.";
+  els.winnerBanner.classList.remove('show');
+}
+
+els.shotBtn.addEventListener('click', () => recordShot(simulateShot()));
+els.resetBtn.addEventListener('click', resetGame);
+els.playAgainBtn.addEventListener('click', resetGame);
+
+renderLetters();
+renderTurn();
+renderTarget();
+</script>
+</body>
+</html>
