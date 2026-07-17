@@ -602,7 +602,10 @@ var Module = {
   <div class="shot-log-wrap">
     <div class="shot-log-header">
       <span class="shot-log-title">Shot Log</span>
-      <button class="shot-log-clear" id="clearLogBtn">Clear</button>
+      <div style="display:flex;gap:6px;">
+        <button class="shot-log-clear" id="discardLastBtn">Discard last</button>
+        <button class="shot-log-clear" id="clearLogBtn">Clear all</button>
+      </div>
     </div>
     <ol id="shotLog" reversed>
       <li class="shot-log-empty">No shots yet this session.</li>
@@ -899,29 +902,36 @@ function fitShot(samples) {
 /*
  * Shot state machine
  *
- * IDLE     Ball at rest; tracking resting centroid as exponential moving average.
- *          Transitions to SHOT when displacement from rest > MOTION_THRESHOLD.
+ * IDLE           Ball at rest; tracking resting centroid as EMA.
+ *                Transitions to SHOT when displacement > MOTION_THRESHOLD.
  *
- * SHOT     Accumulating (cx, cy, t) samples. Transitions to COOLDOWN when
- *          MISS_FRAMES consecutive frames have no detection.
+ * SHOT           Accumulating (cx, cy, t) samples. Transitions to COOLDOWN
+ *                when MISS_FRAMES consecutive frames have no detection.
  *
- * COOLDOWN Brief pause (COOLDOWN_MS) before re-arming, so the result display
- *          is visible and detection jitter can't immediately re-trigger.
+ * COOLDOWN       Result is displayed for COOLDOWN_MS. Timer fires → WAITING_CLEAR.
+ *                Frames are ignored in this state.
+ *
+ * WAITING_CLEAR  Requires CLEAR_FRAMES consecutive empty frames before re-arming.
+ *                This prevents a hand/arm reaching back into frame (to retrieve the
+ *                ball, reset stance) from immediately re-triggering a false shot.
+ *                Only transitions to IDLE once the frame is genuinely clear.
  *
  * All thresholds are in detection-canvas pixels (200×150 space), not overlay pixels.
  */
 const MOTION_THRESHOLD = 8;    // px displacement from rest to trigger shot capture
 const REST_ALPHA       = 0.15; // EMA smoothing for resting position (lower = slower)
 const MISS_FRAMES      = 4;    // consecutive no-detections to end a shot
-const COOLDOWN_MS      = 1500; // ms to show result before re-arming
-const MIN_REST_FRAMES  = 10;   // frames of stable detection before we arm the trigger
+const COOLDOWN_MS      = 1500; // ms to show result before transitioning to WAITING_CLEAR
+const MIN_REST_FRAMES  = 10;   // frames of stable detection before arming the trigger
+const CLEAR_FRAMES     = 8;    // consecutive empty frames required to re-arm after a shot
 
-let shotState     = 'IDLE';  // 'IDLE' | 'SHOT' | 'COOLDOWN'
+let shotState     = 'IDLE';  // 'IDLE' | 'SHOT' | 'COOLDOWN' | 'WAITING_CLEAR'
 let restX         = null;    // EMA of resting centroid x (detection-canvas coords)
 let restY         = null;
 let restFrames    = 0;       // consecutive frames the ball has been at rest
 let shotSamples   = [];      // { cx, cy, t } accumulated during SHOT
 let missCount     = 0;       // consecutive missed frames during SHOT
+let clearCount    = 0;       // consecutive empty frames in WAITING_CLEAR
 let cooldownTimer = null;
 
 function setShotStatus(text, cls) {
@@ -937,6 +947,25 @@ function setShotStatus(text, cls) {
  */
 function updateShotStateMachine(found, cx, cy, t) {
   if (shotState === 'COOLDOWN') return; // result is being displayed; ignore frames
+
+  if (shotState === 'WAITING_CLEAR') {
+    // Wait for CLEAR_FRAMES consecutive empty frames before re-arming.
+    // Any detection (hand, arm, anything) resets the counter.
+    if (found) {
+      clearCount = 0;
+      setShotStatus('Waiting for frame to clear…', '');
+    } else {
+      clearCount++;
+      if (clearCount >= CLEAR_FRAMES) {
+        // Frame is genuinely empty — safe to re-arm
+        shotState  = 'IDLE';
+        restX      = null; restY = null; restFrames = 0;
+        clearCount = 0;
+        setShotStatus('Hold ball still in frame to arm…', '');
+      }
+    }
+    return;
+  }
 
   if (shotState === 'IDLE') {
     if (!found) {
@@ -965,9 +994,12 @@ function updateShotStateMachine(found, cx, cy, t) {
         restX = cx; restY = cy; restFrames = 0;
       }
     } else {
+      const wasArmed = restFrames >= MIN_REST_FRAMES;
       restFrames++;
       if (restFrames >= MIN_REST_FRAMES) {
         setShotStatus('Armed — swing when ready', 'armed');
+        // Announce once, on the frame we first cross the armed threshold
+        if (!wasArmed) announce('ready');
       } else {
         setShotStatus(`Hold still… (${restFrames}/${MIN_REST_FRAMES})`, '');
       }
@@ -1012,13 +1044,15 @@ function finalizeShotCapture() {
     onShotResult(result);
   }
 
-  // Re-arm after cooldown
+  // After cooldown, require the frame to actually clear before re-arming.
+  // Goes to WAITING_CLEAR, not directly to IDLE — prevents a hand re-entering
+  // frame from immediately counting as a resting ball and triggering a false shot.
   if (cooldownTimer) clearTimeout(cooldownTimer);
   cooldownTimer = setTimeout(() => {
-    shotState   = 'IDLE';
-    restX       = null; restY = null; restFrames = 0;
+    shotState   = 'WAITING_CLEAR';
     shotSamples = []; missCount = 0;
-    setShotStatus('Hold ball still in frame to arm…', '');
+    clearCount  = 0;
+    setShotStatus('Waiting for frame to clear…', '');
   }, COOLDOWN_MS);
 }
 
@@ -1068,6 +1102,18 @@ function logShot(result) {
   // Most recent at top — insert before first child
   ol.insertBefore(li, ol.firstChild);
 }
+
+document.getElementById('discardLastBtn').addEventListener('click', () => {
+  const ol   = document.getElementById('shotLog');
+  const first = ol.querySelector('.shot-log-item');
+  if (!first) return;
+  first.remove();
+  shotLogCount--;
+  if (!ol.querySelector('.shot-log-item')) {
+    ol.innerHTML = '<li class="shot-log-empty">No shots yet this session.</li>';
+    shotLogCount = 0;
+  }
+});
 
 document.getElementById('clearLogBtn').addEventListener('click', () => {
   const ol = document.getElementById('shotLog');
@@ -1477,9 +1523,9 @@ cam.detectToggle.addEventListener('click', () => {
   cam.detectToggle.textContent = detecting ? 'Stop Detection' : 'Start Detection';
   if (detecting) {
     // Reset state machine on every fresh start
-    shotState = 'IDLE';
-    restX = null; restY = null; restFrames = 0;
-    shotSamples = []; missCount = 0;
+    shotState  = 'IDLE';
+    restX      = null; restY = null; restFrames = 0;
+    shotSamples = []; missCount = 0; clearCount = 0;
     if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null; }
     setShotStatus('Hold ball still in frame to arm…', '');
     requestAnimationFrame(opencvDetectionTick);
