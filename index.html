@@ -921,7 +921,9 @@ function fitShot(samples) {
  *                Transitions to SHOT when displacement > MOTION_THRESHOLD.
  *
  * SHOT           Accumulating (cx, cy, t) samples. Transitions to COOLDOWN
- *                when MISS_FRAMES consecutive frames have no detection.
+ *                when MISS_FRAMES consecutive frames have no detection,
+ *                STALL_FRAMES consecutive frames show near-zero displacement,
+ *                or MAX_SHOT_FRAMES total frames are reached (discard, not fit).
  *
  * COOLDOWN       Result is displayed for COOLDOWN_MS. Timer fires → WAITING_CLEAR.
  *                Frames are ignored in this state.
@@ -939,6 +941,9 @@ const MISS_FRAMES      = 4;    // consecutive no-detections to end a shot
 const COOLDOWN_MS      = 1500; // ms to show result before transitioning to WAITING_CLEAR
 const MIN_REST_FRAMES  = 10;   // frames of stable detection before arming the trigger
 const CLEAR_FRAMES     = 8;    // consecutive empty frames required to re-arm after a shot
+const MAX_SHOT_FRAMES  = 20;   // >20 frames (~667ms at 30fps) → noise, not real flight — discard
+const STALL_THRESHOLD  = 4;    // px frame-to-frame below which ball is considered stalled
+const STALL_FRAMES     = 3;    // consecutive stall frames before ending SHOT early
 
 let shotState     = 'IDLE';  // 'IDLE' | 'SHOT' | 'COOLDOWN' | 'WAITING_CLEAR'
 let restX         = null;    // EMA of resting centroid x (detection-canvas coords)
@@ -946,6 +951,7 @@ let restY         = null;
 let restFrames    = 0;       // consecutive frames the ball has been at rest
 let shotSamples   = [];      // { cx, cy, t } accumulated during SHOT
 let missCount     = 0;       // consecutive missed frames during SHOT
+let stallCount    = 0;       // consecutive low-velocity frames during SHOT
 let clearCount    = 0;       // consecutive empty frames in WAITING_CLEAR
 let cooldownTimer = null;
 
@@ -1002,6 +1008,7 @@ function updateShotStateMachine(found, cx, cy, t) {
         shotState   = 'SHOT';
         shotSamples = [{ cx, cy, t }];
         missCount   = 0;
+        stallCount  = 0;
         setShotStatus('Shot in progress…', 'active');
       } else {
         // Not enough stable rest frames yet — reset and wait (avoids triggering on
@@ -1023,7 +1030,45 @@ function updateShotStateMachine(found, cx, cy, t) {
   }
 
   if (shotState === 'SHOT') {
+    // Hard cap: if we've accumulated too many frames the ball isn't in flight —
+    // it's jitter or a hand hovering. Discard without fitting (noise data would
+    // produce a plausible-looking but meaningless angle).
+    if (shotSamples.length >= MAX_SHOT_FRAMES) {
+      shotState = 'COOLDOWN';
+      const msg = `Discarded — too long (${shotSamples.length} frames, likely noise)`;
+      setShotStatus(msg, 'reject');
+      announce('discarded');
+      logShot({ ok: false, reason: 'too long — likely noise', frameCount: shotSamples.length });
+      console.log('[golf-tracker] shot discarded: exceeded MAX_SHOT_FRAMES', shotSamples.length);
+      if (cooldownTimer) clearTimeout(cooldownTimer);
+      cooldownTimer = setTimeout(() => {
+        shotState = 'WAITING_CLEAR'; shotSamples = []; missCount = 0; stallCount = 0; clearCount = 0;
+        setShotStatus('Waiting for frame to clear…', '');
+      }, COOLDOWN_MS);
+      return;
+    }
+
     if (found) {
+      // Check frame-to-frame displacement against the last sample to detect stalls.
+      // If the ball has stopped moving (e.g. settled after a slow roll, or it's a
+      // hand hovering), end the shot at this point with the samples collected so far.
+      if (shotSamples.length > 0) {
+        const prev = shotSamples[shotSamples.length - 1];
+        const frameDist = Math.hypot(cx - prev.cx, cy - prev.cy);
+        if (frameDist < STALL_THRESHOLD) {
+          stallCount++;
+          if (stallCount >= STALL_FRAMES) {
+            // Trim the stall frames before fitting — they're noise, not flight.
+            // Keep at least 0 samples (fitShot's min-frame check will reject if too few).
+            shotSamples.splice(shotSamples.length - (STALL_FRAMES - 1));
+            finalizeShotCapture();
+            return;
+          }
+        } else {
+          stallCount = 0;
+        }
+      }
+
       shotSamples.push({ cx, cy, t });
       missCount = 0;
       setShotStatus(`Tracking… (${shotSamples.length} frames)`, 'active');
@@ -1065,7 +1110,7 @@ function finalizeShotCapture() {
   if (cooldownTimer) clearTimeout(cooldownTimer);
   cooldownTimer = setTimeout(() => {
     shotState   = 'WAITING_CLEAR';
-    shotSamples = []; missCount = 0;
+    shotSamples = []; missCount = 0; stallCount = 0;
     clearCount  = 0;
     setShotStatus('Waiting for frame to clear…', '');
   }, COOLDOWN_MS);
@@ -1108,9 +1153,11 @@ function logShot(result) {
       `<span class="log-result">#${shotLogCount} · ${result.angleDeg.toFixed(1)}° · ${result.speedPxPerSec.toFixed(0)} px/s</span>` +
       `<span class="log-meta">${result.frameCount} frames · ${ts}</span>`;
   } else {
+    // Truncate reason at first sentence/clause so it fits in one log line.
+    const shortReason = (result.reason || 'unknown').split('—')[0].split('.')[0].trim();
     li.className = 'shot-log-item rejected';
     li.innerHTML =
-      `<span class="log-result">#${shotLogCount} · Rejected</span>` +
+      `<span class="log-result">#${shotLogCount} · ${shortReason}</span>` +
       `<span class="log-meta">${result.frameCount} frame${result.frameCount === 1 ? '' : 's'} · ${ts}</span>`;
   }
 
