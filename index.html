@@ -187,6 +187,13 @@ var Module = {
   .flex-row{ display:flex; gap:8px; }
   .flex-row > *{ flex:1; }
 
+  .sample-countdown{
+    text-align:center;
+    font-family:'Anton',sans-serif; font-size:36px;
+    color:var(--sand); min-height:44px; line-height:1;
+    margin:6px 0 2px;
+    transition:opacity .2s;
+  }
   .sample-swatch{
     width:36px; height:36px; border-radius:6px;
     border:2px solid rgba(241,240,232,0.3);
@@ -540,11 +547,16 @@ var Module = {
     <div class="panel">
       <h2>Ball Color</h2>
 
-      <div class="sample-row">
+      <!-- Auto-sample at distance -->
+      <button class="btn" id="autoSampleBtn" disabled>Sample at distance (3s)</button>
+      <div class="sample-countdown" id="sampleCountdown"></div>
+
+      <div class="sample-row" style="margin-top:10px;">
         <div class="sample-swatch" id="swatch"></div>
-        <div class="sample-info">
-          Tap anywhere on the camera preview where the ball is showing.<br>
-          Sampled color and a tolerance range around it becomes the detection mask.
+        <div class="sample-info" id="sampleInfo">
+          Press <strong>Sample at distance</strong>, step back to your hitting
+          position with the ball in frame, and wait for the countdown.<br>
+          Or tap directly on the preview to sample a point manually.
         </div>
       </div>
 
@@ -717,8 +729,11 @@ const cam = {
   pxMetric: document.getElementById('pxMetric'),
   resMetric:    document.getElementById('resMetric'),
   fpsMetric:    document.getElementById('fpsMetric'),
-  cvTimeMetric: document.getElementById('cvTimeMetric'),
-  shotStatus:   document.getElementById('shotStatus'),
+  cvTimeMetric:    document.getElementById('cvTimeMetric'),
+  shotStatus:      document.getElementById('shotStatus'),
+  autoSampleBtn:   document.getElementById('autoSampleBtn'),
+  sampleCountdown: document.getElementById('sampleCountdown'),
+  sampleInfo:      document.getElementById('sampleInfo'),
 };
 
 let currentStream = null;
@@ -1209,6 +1224,7 @@ async function startCamera(deviceId) {
 
     cam.lockBtn.disabled = false;
     cam.detectToggle.disabled = false;
+    cam.autoSampleBtn.disabled = false;
 
     // Re-list devices now that we have permission (labels populate after grant)
     await listDevices();
@@ -1310,23 +1326,76 @@ function startCameraFpsMeter(video) {
 }
 
 // Tap-to-sample color from live video feed
-cam.overlay.addEventListener('click', (e) => {
-  if (!currentStream) return;
-  const rect = cam.overlay.getBoundingClientRect();
-  const x = (e.clientX - rect.left) / rect.width;
-  const y = (e.clientY - rect.top) / rect.height;
+// Overlay coordinates (0–1) of the last sampled point, for the persistent marker.
+// Null until a sample has been taken. Drawn by opencvDetectionTick on every frame
+// so it survives the detection overlay being cleared each tick.
+let sampleMarker = null; // { nx, ny } normalised 0-1 coords
 
+/*
+ * Core sample function: read one pixel from the video at normalised coords (nx, ny),
+ * update sampledHSV and the swatch, draw a persistent marker on the overlay.
+ * Called by both the tap handler and the auto-sample countdown.
+ */
+function applySample(nx, ny) {
   const tmp = document.createElement('canvas');
-  tmp.width = cam.video.videoWidth || 640;
+  tmp.width  = cam.video.videoWidth  || 640;
   tmp.height = cam.video.videoHeight || 480;
   const ctx = tmp.getContext('2d');
   ctx.drawImage(cam.video, 0, 0, tmp.width, tmp.height);
   const px = ctx.getImageData(
-    Math.floor(x * tmp.width), Math.floor(y * tmp.height), 1, 1
+    Math.floor(nx * tmp.width), Math.floor(ny * tmp.height), 1, 1
   ).data;
 
-  sampledHSV = rgbToHsv(px[0], px[1], px[2]);
+  sampledHSV  = rgbToHsv(px[0], px[1], px[2]);
+  sampleMarker = { nx, ny };
   cam.swatch.style.background = `rgb(${px[0]},${px[1]},${px[2]})`;
+  cam.sampleInfo.innerHTML =
+    `Sampled at ${Math.round(nx*100)}%, ${Math.round(ny*100)}% — ` +
+    `H ${sampledHSV.h.toFixed(0)}° S ${(sampledHSV.s*100).toFixed(0)}% ` +
+    `V ${(sampledHSV.v*100).toFixed(0)}%<br>` +
+    `Press <strong>Sample at distance</strong> again to resample, or tap the preview.`;
+}
+
+// Tap-to-sample (existing path, now delegates to applySample)
+cam.overlay.addEventListener('click', (e) => {
+  if (!currentStream) return;
+  const rect = cam.overlay.getBoundingClientRect();
+  applySample(
+    (e.clientX - rect.left) / rect.width,
+    (e.clientY - rect.top)  / rect.height
+  );
+});
+
+/*
+ * Auto-sample at distance: 3-second countdown (spoken + displayed), then
+ * samples the centre of the frame. Centre is where you'd naturally frame the
+ * ball while backing up to swing distance. Resampling is trivial — press again.
+ */
+let autoSampleTimer = null;
+cam.autoSampleBtn.addEventListener('click', () => {
+  if (autoSampleTimer) return; // already counting down — ignore extra taps
+  cam.autoSampleBtn.disabled = true;
+
+  let t = 3;
+  cam.sampleCountdown.textContent = t;
+  announce(String(t));
+
+  autoSampleTimer = setInterval(() => {
+    t--;
+    if (t > 0) {
+      cam.sampleCountdown.textContent = t;
+      announce(String(t));
+    } else {
+      clearInterval(autoSampleTimer);
+      autoSampleTimer = null;
+      cam.sampleCountdown.textContent = '';
+      cam.autoSampleBtn.disabled = false;
+
+      // Sample from the centre of the frame
+      applySample(0.5, 0.5);
+      announce('sampled');
+    }
+  }, 1000);
 });
 
 ['hueTol', 'satMin', 'valMin'].forEach(id => {
@@ -1484,6 +1553,32 @@ function opencvDetectionTick() {
       cam.centerMetric.textContent = '–';
       cam.widthMetric.textContent  = '–';
       cam.pxMetric.textContent     = cv.countNonZero(mask);
+    }
+
+    // Draw persistent sample-point marker so the user can see from swing distance
+    // whether the sampled pixel hit the ball. Drawn every tick on top of the detection
+    // overlay so it survives clearRect. Null until applySample() has been called.
+    if (sampleMarker) {
+      const mx = sampleMarker.nx * cam.overlay.width;
+      const my = sampleMarker.ny * cam.overlay.height;
+      const R = 10; // crosshair radius
+
+      octx.save();
+      octx.strokeStyle = '#C9A66B'; // --sand, visible against both dark and light BGs
+      octx.lineWidth   = 2;
+
+      // Circle
+      octx.beginPath();
+      octx.arc(mx, my, R, 0, Math.PI * 2);
+      octx.stroke();
+
+      // Crosshair lines
+      octx.beginPath();
+      octx.moveTo(mx - R - 4, my); octx.lineTo(mx + R + 4, my);
+      octx.moveTo(mx, my - R - 4); octx.lineTo(mx, my + R + 4);
+      octx.stroke();
+
+      octx.restore();
     }
 
     // Feed into shot state machine using video.currentTime (seconds) as the timestamp.
