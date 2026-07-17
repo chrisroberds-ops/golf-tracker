@@ -246,6 +246,53 @@ var Module = {
   .shot-status.reject { color:var(--flag-red);border-color:rgba(196,67,47,0.4);   background:rgba(196,67,47,0.08); }
   .shot-status.result { color:var(--chalk);   border-color:rgba(241,240,232,0.25);background:rgba(255,255,255,0.06); }
 
+  /* Shot log */
+  .shot-log-wrap{
+    margin:0 28px 32px;
+    background:var(--panel);
+    border:1px solid rgba(241,240,232,0.08);
+    border-radius:10px;
+    padding:14px 16px;
+  }
+  .shot-log-header{
+    display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:10px;
+  }
+  .shot-log-title{
+    font-size:12px; text-transform:uppercase; letter-spacing:.12em;
+    color:var(--chalk-dim); font-weight:700;
+  }
+  .shot-log-clear{
+    appearance:none; border:none; cursor:pointer; background:transparent;
+    font-family:'Manrope',sans-serif; font-size:11px; font-weight:700;
+    letter-spacing:.08em; text-transform:uppercase;
+    color:var(--chalk-dim); padding:4px 8px; border-radius:4px;
+    border:1px solid rgba(241,240,232,0.15);
+    transition:color .15s, border-color .15s;
+  }
+  .shot-log-clear:hover{ color:var(--chalk); border-color:rgba(241,240,232,0.35); }
+  #shotLog{
+    list-style:none; padding:0; margin:0;
+    max-height:180px; overflow-y:auto;
+    display:flex; flex-direction:column; gap:4px;
+  }
+  .shot-log-empty{
+    font-size:12px; color:rgba(241,240,232,0.25);
+    text-align:center; padding:10px 0; font-style:italic;
+  }
+  .shot-log-item{
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-size:12px; padding:7px 10px; border-radius:6px;
+    background:rgba(255,255,255,0.03);
+  }
+  .shot-log-item.rejected{
+    color:var(--chalk-dim);
+    background:rgba(196,67,47,0.07);
+  }
+  .shot-log-item .log-result{ font-weight:700; color:var(--chalk); }
+  .shot-log-item.rejected .log-result{ color:var(--flag-red); font-weight:600; }
+  .shot-log-item .log-meta{ color:var(--chalk-dim); font-size:11px; }
+
   /* ======================================================
      GAME VIEW
      Lifted from golf_green_prototype.html — no logic changes.
@@ -549,6 +596,17 @@ var Module = {
       </div>
     </div>
 
+  </div>
+
+  <!-- Shot log — full-width below both panels -->
+  <div class="shot-log-wrap">
+    <div class="shot-log-header">
+      <span class="shot-log-title">Shot Log</span>
+      <button class="shot-log-clear" id="clearLogBtn">Clear</button>
+    </div>
+    <ol id="shotLog" reversed>
+      <li class="shot-log-empty">No shots yet this session.</li>
+    </ol>
   </div>
 </div>
 
@@ -939,12 +997,16 @@ function finalizeShotCapture() {
 
   if (!result.ok) {
     setShotStatus(result.reason, 'reject');
+    announce(result.reason);
+    logShot({ ok: false, reason: result.reason, frameCount: shotSamples.length });
     console.log('[golf-tracker] shot rejected:', result.reason, shotSamples);
   } else {
-    const a = result.angleDeg.toFixed(1);
-    const s = result.speedPxPerSec.toFixed(0);
+    const a   = result.angleDeg.toFixed(1);
+    const s   = result.speedPxPerSec.toFixed(0);
     const msg = `${result.frameCount} frames · ${a}° · ${s} px/s`;
     setShotStatus(msg, 'result');
+    announce(`captured, ${Math.round(result.angleDeg)} degrees, ${Math.round(result.speedPxPerSec)} pixels per second`);
+    logShot(result);
     console.log('[golf-tracker] shot result:', result);
     // Gate #5 integration point: pass result to physics → recordShot()
     onShotResult(result);
@@ -953,20 +1015,71 @@ function finalizeShotCapture() {
   // Re-arm after cooldown
   if (cooldownTimer) clearTimeout(cooldownTimer);
   cooldownTimer = setTimeout(() => {
-    shotState  = 'IDLE';
-    restX      = null; restY = null; restFrames = 0;
+    shotState   = 'IDLE';
+    restX       = null; restY = null; restFrames = 0;
     shotSamples = []; missCount = 0;
     setShotStatus('Hold ball still in frame to arm…', '');
   }, COOLDOWN_MS);
 }
 
+/* --- Text-to-speech ---
+ * Cancels any queued utterance first so a rapid sequence of shots doesn't
+ * pile up. Uses default voice/rate; no configuration needed for this use case.
+ * speechSynthesis is available in all target browsers (Chrome Android, Chrome desktop).
+ * First call must come after a user gesture — "Start Detection" tap satisfies that.
+ */
+function announce(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  window.speechSynthesis.speak(u);
+}
+
+/* --- Shot log ---
+ * Prepends a new entry to the on-screen list. Each entry shows:
+ *   - Captured: angle + px/s + frame count (will add carry distance in Gate #5)
+ *   - Rejected: reason + frame count
+ * Keeps the DOM list as the source of truth — no separate array needed.
+ */
+let shotLogCount = 0;
+
+function logShot(result) {
+  const ol    = document.getElementById('shotLog');
+  const empty = ol.querySelector('.shot-log-empty');
+  if (empty) empty.remove();
+
+  shotLogCount++;
+  const now = new Date();
+  const ts  = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  const li = document.createElement('li');
+  if (result.ok) {
+    li.className = 'shot-log-item';
+    li.innerHTML =
+      `<span class="log-result">#${shotLogCount} · ${result.angleDeg.toFixed(1)}° · ${result.speedPxPerSec.toFixed(0)} px/s</span>` +
+      `<span class="log-meta">${result.frameCount} frames · ${ts}</span>`;
+  } else {
+    li.className = 'shot-log-item rejected';
+    li.innerHTML =
+      `<span class="log-result">#${shotLogCount} · Rejected</span>` +
+      `<span class="log-meta">${result.frameCount} frame${result.frameCount === 1 ? '' : 's'} · ${ts}</span>`;
+  }
+
+  // Most recent at top — insert before first child
+  ol.insertBefore(li, ol.firstChild);
+}
+
+document.getElementById('clearLogBtn').addEventListener('click', () => {
+  const ol = document.getElementById('shotLog');
+  ol.innerHTML = '<li class="shot-log-empty">No shots yet this session.</li>';
+  shotLogCount = 0;
+});
+
 /*
  * Gate #5 integration point — stub for now.
- * Receives the fitShot result; Gate #5 runs physics on it and calls recordShot().
- * Not wiring physics yet — that's Gate #4/5.
+ * Receives the fitShot result; Gate #5 runs physics and calls recordShot().
  */
 function onShotResult(result) {
-  // Stub: log the raw tracking output. Physics integration in Gate #4/5.
   console.log('[golf-tracker] onShotResult (stub):', {
     angleDeg:      result.angleDeg.toFixed(2),
     speedPxPerSec: result.speedPxPerSec.toFixed(1),
