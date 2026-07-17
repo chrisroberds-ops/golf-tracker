@@ -100,19 +100,25 @@ var Module = {
      CALIBRATION VIEW
      Lifted from calibration_prototype.html — no logic changes.
      ====================================================== */
-  #calibView{
-    /* full-page height minus nav */
+  /* Hero: video + primary controls always together, no scroll needed */
+  .calib-hero{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:14px;
+    padding:14px 28px 0;
   }
-  #calibView header{
-    padding:18px 28px 6px;
+  @media (max-width:820px){
+    .calib-hero{
+      grid-template-columns:1fr;
+      padding:10px 14px 0;
+      gap:10px;
+    }
   }
-  #calibView h1{
-    font-family:'Anton',sans-serif; font-weight:400;
-    font-size:20px; letter-spacing:.02em;
-    margin:0 0 4px; color:var(--sand);
+  .calib-controls-col{
+    display:flex; flex-direction:column; gap:8px;
   }
-  .sub{ font-size:13px; color:var(--chalk-dim); }
 
+  /* Secondary: sliders, metrics, notes — scrolls below the hero */
   .layout{
     display:grid;
     grid-template-columns:1fr 1fr;
@@ -120,7 +126,7 @@ var Module = {
     padding:14px 28px 40px;
   }
   @media (max-width:820px){
-    .layout{ grid-template-columns:1fr; }
+    .layout{ grid-template-columns:1fr; padding:10px 14px 32px; }
   }
 
   .panel{
@@ -497,28 +503,52 @@ var Module = {
 
 <!-- ======== CALIBRATION VIEW ======== -->
 <div class="view active" id="calibView">
-  <header>
-    <h1>Calibration</h1>
-    <div class="sub">Pick a camera, lock exposure, then tap the ball on the preview to teach it the color.</div>
-  </header>
 
-  <div class="layout">
+  <!-- HERO: video + primary controls together — both visible without scrolling on phone -->
+  <div class="calib-hero">
 
-    <!-- Camera panel -->
-    <div class="panel">
-      <h2>Camera</h2>
+    <!-- Left/top: camera feed -->
+    <div class="calib-video-col">
       <select class="cam-select" id="deviceSelect"><option>Requesting permission…</option></select>
-
       <div class="video-frame">
         <video id="calibVideo" autoplay playsinline muted></video>
         <canvas id="calibOverlay"></canvas>
       </div>
-
       <div class="status-row">
         <span><span class="dot" id="statusDot"></span><span id="statusText">Initializing…</span></span>
         <span id="fpsText">-- fps</span>
       </div>
-      <div class="metrics" style="margin-top:10px;">
+      <div class="error-box" id="errorBox"></div>
+    </div>
+
+    <!-- Right/bottom: primary action buttons + shot status -->
+    <div class="calib-controls-col">
+      <button class="btn" id="autoSampleBtn" disabled>Sample at distance (3s)</button>
+      <div class="sample-countdown" id="sampleCountdown"></div>
+      <div class="sample-row">
+        <div class="sample-swatch" id="swatch"></div>
+        <div class="sample-info" id="sampleInfo">
+          Press <strong>Sample at distance</strong>, step back to your hitting
+          position with the ball in frame, and wait for the countdown.
+          Or tap directly on the preview to sample a point manually.
+        </div>
+      </div>
+      <button class="btn" id="detectToggle" disabled>Start Detection</button>
+      <div class="flex-row">
+        <button class="btn" id="lockBtn" disabled>Lock Focus &amp; Exposure</button>
+        <button class="btn secondary" id="restartBtn">Restart Camera</button>
+      </div>
+      <div class="shot-status" id="shotStatus">Waiting for shot…</div>
+    </div>
+
+  </div><!-- /.calib-hero -->
+
+  <!-- SECONDARY: sliders, metrics, notes — scrolls below the hero -->
+  <div class="layout">
+
+    <div class="panel">
+      <h2>Camera</h2>
+      <div class="metrics" style="margin-top:0">
         <div class="metric">
           <div class="metric-label">Resolution</div>
           <div class="metric-value small" id="resMetric">–</div>
@@ -528,14 +558,6 @@ var Module = {
           <div class="metric-value small" id="fpsMetric">–</div>
         </div>
       </div>
-
-      <div class="flex-row" style="margin-top:12px;">
-        <button class="btn" id="lockBtn" disabled>Lock Focus &amp; Exposure</button>
-        <button class="btn secondary" id="restartBtn">Restart Camera</button>
-      </div>
-
-      <div class="error-box" id="errorBox"></div>
-
       <div class="note">
         Camera access requires a secure context (https, or localhost). If you
         see an error here, open this page over your Vercel deploy or via
@@ -543,23 +565,8 @@ var Module = {
       </div>
     </div>
 
-    <!-- HSV calibration panel (detection logic wired in Gate #2) -->
     <div class="panel">
       <h2>Ball Color</h2>
-
-      <!-- Auto-sample at distance -->
-      <button class="btn" id="autoSampleBtn" disabled>Sample at distance (3s)</button>
-      <div class="sample-countdown" id="sampleCountdown"></div>
-
-      <div class="sample-row" style="margin-top:10px;">
-        <div class="sample-swatch" id="swatch"></div>
-        <div class="sample-info" id="sampleInfo">
-          Press <strong>Sample at distance</strong>, step back to your hitting
-          position with the ball in frame, and wait for the countdown.<br>
-          Or tap directly on the preview to sample a point manually.
-        </div>
-      </div>
-
       <div class="slider-group">
         <div class="slider-label"><span>Hue tolerance</span><span id="hueVal">18°</span></div>
         <input type="range" id="hueTol" min="4" max="40" value="18">
@@ -572,11 +579,6 @@ var Module = {
         <div class="slider-label"><span>Value (brightness) min</span><span id="valVal">30%</span></div>
         <input type="range" id="valMin" min="0" max="90" value="30">
       </div>
-
-      <button class="btn" id="detectToggle" disabled>Start Detection</button>
-
-      <div class="shot-status" id="shotStatus">Waiting for shot…</div>
-
       <div class="metrics">
         <div class="metric">
           <div class="metric-label">Ball found</div>
@@ -598,8 +600,11 @@ var Module = {
           <div class="metric-label">CV time</div>
           <div class="metric-value small" id="cvTimeMetric">–</div>
         </div>
+        <div class="metric">
+          <div class="metric-label">EMA disp</div>
+          <div class="metric-value small" id="dispMetric" title="px from EMA rest position — triggers SHOT at ≥8">–</div>
+        </div>
       </div>
-
       <div class="note">
         Gate #3: hold the ball still in frame for ~0.5s to set the resting
         position, then swing. The tracker captures frames from motion start
@@ -608,9 +613,9 @@ var Module = {
       </div>
     </div>
 
-  </div>
+  </div><!-- /.layout secondary -->
 
-  <!-- Shot log — full-width below both panels -->
+  <!-- Shot log — full-width, scrolls last -->
   <div class="shot-log-wrap">
     <div class="shot-log-header">
       <span class="shot-log-title">Shot Log</span>
@@ -623,6 +628,7 @@ var Module = {
       <li class="shot-log-empty">No shots yet this session.</li>
     </ol>
   </div>
+
 </div>
 
 <!-- ======== GAME VIEW ======== -->
@@ -730,6 +736,7 @@ const cam = {
   resMetric:    document.getElementById('resMetric'),
   fpsMetric:    document.getElementById('fpsMetric'),
   cvTimeMetric:    document.getElementById('cvTimeMetric'),
+  dispMetric:      document.getElementById('dispMetric'),
   shotStatus:      document.getElementById('shotStatus'),
   autoSampleBtn:   document.getElementById('autoSampleBtn'),
   sampleCountdown: document.getElementById('sampleCountdown'),
@@ -1002,6 +1009,9 @@ function updateShotStateMachine(found, cx, cy, t) {
     restY = restY + REST_ALPHA * (cy - restY);
     const disp = Math.hypot(cx - restX, cy - restY);
 
+    // Show live displacement so you can see raw jitter vs threshold without console.
+    cam.dispMetric.textContent = disp.toFixed(1) + ' px';
+
     if (disp > MOTION_THRESHOLD) {
       // Ball broke the threshold — but only trigger if we've had a stable resting read
       if (restFrames >= MIN_REST_FRAMES) {
@@ -1010,6 +1020,7 @@ function updateShotStateMachine(found, cx, cy, t) {
         missCount   = 0;
         stallCount  = 0;
         setShotStatus('Shot in progress…', 'active');
+        console.log('[golf-tracker] SHOT started — restFrames:', restFrames, 'trigger disp:', disp.toFixed(1), 'restXY:', restX?.toFixed(1), restY?.toFixed(1));
       } else {
         // Not enough stable rest frames yet — reset and wait (avoids triggering on
         // the ball being placed into frame)
@@ -1052,15 +1063,17 @@ function updateShotStateMachine(found, cx, cy, t) {
       // Check frame-to-frame displacement against the last sample to detect stalls.
       // If the ball has stopped moving (e.g. settled after a slow roll, or it's a
       // hand hovering), end the shot at this point with the samples collected so far.
+      let frameDist = null;
       if (shotSamples.length > 0) {
         const prev = shotSamples[shotSamples.length - 1];
-        const frameDist = Math.hypot(cx - prev.cx, cy - prev.cy);
+        frameDist = Math.hypot(cx - prev.cx, cy - prev.cy);
         if (frameDist < STALL_THRESHOLD) {
           stallCount++;
           if (stallCount >= STALL_FRAMES) {
             // Trim the stall frames before fitting — they're noise, not flight.
             // Keep at least 0 samples (fitShot's min-frame check will reject if too few).
             shotSamples.splice(shotSamples.length - (STALL_FRAMES - 1));
+            console.log('[golf-tracker] SHOT stall →', shotSamples.length, 'samples remain after trim');
             finalizeShotCapture();
             return;
           }
@@ -1071,11 +1084,19 @@ function updateShotStateMachine(found, cx, cy, t) {
 
       shotSamples.push({ cx, cy, t });
       missCount = 0;
+      // Per-frame trace: visible in DevTools console during any SHOT window.
+      // Shows whether detection fires at all during a real swing.
+      console.log('[golf-tracker] SHOT #' + shotSamples.length,
+        'cx', cx.toFixed(1), 'cy', cy.toFixed(1),
+        frameDist !== null ? 'Δ' + frameDist.toFixed(1) : '(first)',
+        'stall', stallCount);
       setShotStatus(`Tracking… (${shotSamples.length} frames)`, 'active');
     } else {
       missCount++;
+      console.log('[golf-tracker] SHOT miss', missCount + '/' + MISS_FRAMES);
       if (missCount >= MISS_FRAMES) {
         // Ball has left frame / hit net — finalize shot
+        console.log('[golf-tracker] SHOT ending — miss threshold reached');
         finalizeShotCapture();
       }
     }
