@@ -929,25 +929,25 @@ function opencvDetectionTick() {
     const hHi = Math.min(179, h + ht);
 
     // 1×1 scalar-bound Mats — inRange broadcasts them to src size per OpenCV spec.
-    // This avoids allocating + filling two 200×150×3 = 90KB constant Mats every tick
-    // (the main source of the original 16fps overhead beyond the pixel operations).
-    lowMat  = new cv.Mat(1, 1, cv.CV_8UC3, [hLo, sm, vm, 0]);
-    highMat = new cv.Mat(1, 1, cv.CV_8UC3, [hHi, 255, 255, 255]);
+    // Must be CV_8UC3 with a 3-element scalar to match the HSV source (CV_8UC3).
+    // A 4-element scalar on a 3-channel Mat throws in OpenCV.js — that was causing
+    // the try block to exit immediately (caught silently), giving a ~2ms CV time and
+    // no detection results.
+    lowMat  = new cv.Mat(1, 1, cv.CV_8UC3, [hLo, sm, vm]);
+    highMat = new cv.Mat(1, 1, cv.CV_8UC3, [hHi, 255, 255]);
     cv.inRange(hsv, lowMat, highMat, mask);
 
     // Wrap-around: red and pink hues straddle 0°/179° in OpenCV space
     if (h - ht < 0) {
-      // e.g. h=5, ht=10 → main covers [0,15]; also need [175,179]
       maskWrap = new cv.Mat();
-      lowMat2  = new cv.Mat(1, 1, cv.CV_8UC3, [180 + (h - ht), sm, vm, 0]);
-      highMat2 = new cv.Mat(1, 1, cv.CV_8UC3, [179, 255, 255, 255]);
+      lowMat2  = new cv.Mat(1, 1, cv.CV_8UC3, [180 + (h - ht), sm, vm]);
+      highMat2 = new cv.Mat(1, 1, cv.CV_8UC3, [179, 255, 255]);
       cv.inRange(hsv, lowMat2, highMat2, maskWrap);
       cv.bitwise_or(mask, maskWrap, mask);
     } else if (h + ht > 179) {
-      // e.g. h=174, ht=10 → main covers [164,179]; also need [0,4]
       maskWrap = new cv.Mat();
-      lowMat2  = new cv.Mat(1, 1, cv.CV_8UC3, [0, sm, vm, 0]);
-      highMat2 = new cv.Mat(1, 1, cv.CV_8UC3, [(h + ht) - 180, 255, 255, 255]);
+      lowMat2  = new cv.Mat(1, 1, cv.CV_8UC3, [0, sm, vm]);
+      highMat2 = new cv.Mat(1, 1, cv.CV_8UC3, [(h + ht) - 180, 255, 255]);
       cv.inRange(hsv, lowMat2, highMat2, maskWrap);
       cv.bitwise_or(mask, maskWrap, mask);
     }
@@ -999,7 +999,9 @@ function opencvDetectionTick() {
     }
 
   } catch (err) {
-    console.error('[golf-tracker] OpenCV detection error:', err);
+    // Log with full stack so CV type mismatches and WASM errors are visible in DevTools
+    console.error('[golf-tracker] OpenCV detection error:', err, err?.stack);
+    cam.foundMetric.textContent = 'ERR';
   } finally {
     // Every Mat must be deleted — no GC in WASM heap
     if (rgba)      rgba.delete();
