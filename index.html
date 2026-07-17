@@ -449,6 +449,16 @@ var Module = {
         <span><span class="dot" id="statusDot"></span><span id="statusText">Initializing…</span></span>
         <span id="fpsText">-- fps</span>
       </div>
+      <div class="metrics" style="margin-top:10px;">
+        <div class="metric">
+          <div class="metric-label">Resolution</div>
+          <div class="metric-value small" id="resMetric">–</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Negotiated</div>
+          <div class="metric-value small" id="fpsMetric">–</div>
+        </div>
+      </div>
 
       <div class="flex-row" style="margin-top:12px;">
         <button class="btn" id="lockBtn" disabled>Lock Focus &amp; Exposure</button>
@@ -508,16 +518,9 @@ var Module = {
           <div class="metric-label">Matched pixels</div>
           <div class="metric-value small" id="pxMetric">–</div>
         </div>
-      </div>
-
-      <div class="metrics" style="margin-top:0;">
         <div class="metric">
-          <div class="metric-label">Resolution</div>
-          <div class="metric-value small" id="resMetric">–</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">Negotiated</div>
-          <div class="metric-value small" id="fpsMetric">–</div>
+          <div class="metric-label">CV time</div>
+          <div class="metric-value small" id="cvTimeMetric">–</div>
         </div>
       </div>
 
@@ -633,14 +636,24 @@ const cam = {
   centerMetric: document.getElementById('centerMetric'),
   widthMetric: document.getElementById('widthMetric'),
   pxMetric: document.getElementById('pxMetric'),
-  resMetric: document.getElementById('resMetric'),
-  fpsMetric: document.getElementById('fpsMetric'),
+  resMetric:    document.getElementById('resMetric'),
+  fpsMetric:    document.getElementById('fpsMetric'),
+  cvTimeMetric: document.getElementById('cvTimeMetric'),
 };
 
 let currentStream = null;
 let sampledHSV = null; // {h, s, v}  h in 0-360, s/v 0-1
 let detecting = false;
 let lastDetectedTime = -1; // frame dedup: only process when camera delivers a new frame
+
+// Pre-allocated off-screen canvas for detection — created once, reused every tick
+// to avoid per-frame DOM allocation in the hot loop.
+// 200×150 gives 2.56× fewer pixels than the original 320×240, cutting OpenCV
+// work proportionally while keeping a foam ball ~9px wide at typical range.
+const DETECT_W = 200, DETECT_H = 150;
+const detectCanvas = document.createElement('canvas');
+detectCanvas.width = DETECT_W; detectCanvas.height = DETECT_H;
+const detectCtx = detectCanvas.getContext('2d');
 // fpsFrames/fpsLast removed — camera FPS is now measured per video frame, not per rAF tick
 
 function showCameraError(msg) {
@@ -885,17 +898,17 @@ function opencvDetectionTick() {
     return;
   }
 
-  const W = 320, H = 240;
-  const tmpCanvas = document.createElement('canvas');
-  tmpCanvas.width = W; tmpCanvas.height = H;
-  tmpCanvas.getContext('2d').drawImage(cam.video, 0, 0, W, H);
+  // Draw into the pre-allocated 200×150 canvas — no DOM allocation per tick
+  detectCtx.drawImage(cam.video, 0, 0, DETECT_W, DETECT_H);
 
   // Declare all Mats outside try so finally can safely check before .delete()
   let rgba, rgb, hsv, mask, maskWrap, kernel, contours, hierarchy;
   let lowMat, highMat, lowMat2, highMat2;
 
+  const t0 = performance.now();
+
   try {
-    rgba      = cv.imread(tmpCanvas);       // CV_8UC4 (RGBA — canvas pixel order)
+    rgba      = cv.imread(detectCanvas);    // CV_8UC4 (RGBA — canvas pixel order)
     rgb       = new cv.Mat();
     hsv       = new cv.Mat();
     mask      = new cv.Mat();
@@ -915,24 +928,26 @@ function opencvDetectionTick() {
     const hLo = Math.max(0,   h - ht);
     const hHi = Math.min(179, h + ht);
 
-    // Main range — scalar-filled Mats are the documented inRange bound format
-    lowMat  = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [hLo, sm, vm, 0]);
-    highMat = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [hHi, 255, 255, 255]);
+    // 1×1 scalar-bound Mats — inRange broadcasts them to src size per OpenCV spec.
+    // This avoids allocating + filling two 200×150×3 = 90KB constant Mats every tick
+    // (the main source of the original 16fps overhead beyond the pixel operations).
+    lowMat  = new cv.Mat(1, 1, cv.CV_8UC3, [hLo, sm, vm, 0]);
+    highMat = new cv.Mat(1, 1, cv.CV_8UC3, [hHi, 255, 255, 255]);
     cv.inRange(hsv, lowMat, highMat, mask);
 
     // Wrap-around: red and pink hues straddle 0°/179° in OpenCV space
     if (h - ht < 0) {
       // e.g. h=5, ht=10 → main covers [0,15]; also need [175,179]
       maskWrap = new cv.Mat();
-      lowMat2  = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180 + (h - ht), sm, vm, 0]);
-      highMat2 = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [179, 255, 255, 255]);
+      lowMat2  = new cv.Mat(1, 1, cv.CV_8UC3, [180 + (h - ht), sm, vm, 0]);
+      highMat2 = new cv.Mat(1, 1, cv.CV_8UC3, [179, 255, 255, 255]);
       cv.inRange(hsv, lowMat2, highMat2, maskWrap);
       cv.bitwise_or(mask, maskWrap, mask);
     } else if (h + ht > 179) {
       // e.g. h=174, ht=10 → main covers [164,179]; also need [0,4]
       maskWrap = new cv.Mat();
-      lowMat2  = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, sm, vm, 0]);
-      highMat2 = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [(h + ht) - 180, 255, 255, 255]);
+      lowMat2  = new cv.Mat(1, 1, cv.CV_8UC3, [0, sm, vm, 0]);
+      highMat2 = new cv.Mat(1, 1, cv.CV_8UC3, [(h + ht) - 180, 255, 255, 255]);
       cv.inRange(hsv, lowMat2, highMat2, maskWrap);
       cv.bitwise_or(mask, maskWrap, mask);
     }
@@ -954,8 +969,8 @@ function opencvDetectionTick() {
     const octx = cam.overlay.getContext('2d');
     octx.clearRect(0, 0, cam.overlay.width, cam.overlay.height);
 
-    // ~40 px² in 320×240 ≈ a 6×7 pixel blob — anything smaller is noise
-    const found = bestIdx >= 0 && bestArea > 40;
+    // ~20 px² at 200×150 ≈ a 4×5 pixel blob — scaled down from 40px² at 320×240
+    const found = bestIdx >= 0 && bestArea > 20;
     cam.foundMetric.textContent = found ? 'Yes' : 'No';
 
     if (found) {
@@ -1000,6 +1015,11 @@ function opencvDetectionTick() {
     if (lowMat2)   lowMat2.delete();
     if (highMat2)  highMat2.delete();
   }
+
+  // Show per-frame CV time so the user can confirm whether optimizations recovered
+  // the 30fps ceiling. If this reads >33ms, we're still dropping camera frames.
+  const dt = performance.now() - t0;
+  cam.cvTimeMetric.textContent = dt.toFixed(1) + ' ms';
 
   requestAnimationFrame(opencvDetectionTick);
 }

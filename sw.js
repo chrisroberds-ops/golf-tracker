@@ -11,7 +11,7 @@
   On the very first install, SHELL is fetched eagerly (install-time precache)
   so the app is immediately available offline after that first page load.
 */
-const CACHE_NAME = 'golf-tracker-v2';
+const CACHE_NAME = 'golf-tracker-v3';
 
 const SHELL = [
   '/',
@@ -57,6 +57,11 @@ self.addEventListener('activate', event => {
 // Network-first: try the network, update cache on success, fall back to cache.
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
+  // Cache API only supports http/https — skip chrome-extension://, blob:, data:, etc.
+  // Without this guard the SW throws "Failed to execute 'put' on 'Cache': Request
+  // scheme chrome-extension is unsupported" when browser extensions inject requests.
+  const { protocol } = new URL(event.request.url);
+  if (protocol !== 'http:' && protocol !== 'https:') return;
 
   event.respondWith(
     fetch(event.request)
