@@ -305,6 +305,12 @@ var Module = {
   .shot-log-item .log-result{ font-weight:700; color:var(--chalk); }
   .shot-log-item.rejected .log-result{ color:var(--flag-red); font-weight:600; }
   .shot-log-item .log-meta{ color:var(--chalk-dim); font-size:11px; }
+  /* Intentional swing marker — set by "swing attempt" voice command */
+  .shot-log-item.intent{ border-left:3px solid var(--sand); padding-left:8px; }
+  .shot-log-item.intent .log-intent-badge{
+    font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--sand); margin-right:5px;
+  }
 
   /* ======================================================
      GAME VIEW
@@ -830,8 +836,22 @@ function linReg(ys, ts) {
  * reporting a number from too little data. Tuned for 30fps / 4-5 usable frames
  * minimum, not 8+.
  */
+// Minimum frames to accept a shot — tunable without a deploy.
+// Set to 2 because real wedge strikes at 30fps consistently produce 2-3 frames.
+// NOTE: at n=2, r²=1.0 always (two points define a perfect line), so the r²
+// quality gate is bypassed automatically; plausibility caps on speed/angle apply instead.
+const MIN_FRAMES = 2;
+
+// Plausibility bounds applied when n=2 (r² can't discriminate).
+// A single bad detection pair can produce any angle/speed; these caps reject the
+// most implausible results. Values chosen for indoor foam-ball wedge shots:
+//   speed: >10 px/s = real motion at 200×150 scale; <2000 px/s = reachable without slo-mo
+//   angle: |angleDeg| ≤ 80° — >80° means nearly vertical, not a wedge shot
+const MIN_SPEED_PX = 10;
+const MAX_SPEED_PX = 2000;
+const MAX_ABS_ANGLE = 80;  // degrees from horizontal
+
 function fitShot(samples) {
-  const MIN_FRAMES = 4;
   if (samples.length < MIN_FRAMES) {
     return { ok: false, reason: `Only ${samples.length} frame${samples.length === 1 ? '' : 's'} captured — need at least ${MIN_FRAMES}. Try again.` };
   }
@@ -843,30 +863,6 @@ function fitShot(samples) {
   const fitX = linReg(xs, ts);
   const fitY = linReg(ys, ts);
 
-  // Minimum r² for both axes: anything below this is noise, not a real trajectory.
-  // r²=0.2 on both axes (as seen on false triggers) means the regression is
-  // essentially random. 0.85 still passes genuine fast-ball captures with some noise.
-  //
-  // Exception: when an axis has very little total range, r² becomes mathematically
-  // unstable — a perfectly flat line (cy varies only 1px) can produce r²=0.0 even
-  // though the path is completely clean. Skip the r² check for that axis when its
-  // value range is below FLAT_AXIS_PX (the ball genuinely barely moved on that axis).
-  const MIN_R2       = 0.85;
-  const FLAT_AXIS_PX = 5; // detection-canvas px; 5px at 200×150 ≈ 2.5% of frame height
-
-  const xRange = Math.max(...xs) - Math.min(...xs);
-  const yRange = Math.max(...ys) - Math.min(...ys);
-
-  const xNoisy = fitX.r2 < MIN_R2 && xRange >= FLAT_AXIS_PX;
-  const yNoisy = fitY.r2 < MIN_R2 && yRange >= FLAT_AXIS_PX;
-
-  if (xNoisy || yNoisy) {
-    return {
-      ok: false,
-      reason: `Trajectory too noisy (r²x=${fitX.r2.toFixed(2)}, r²y=${fitY.r2.toFixed(2)}) — try again`,
-    };
-  }
-
   const vx = fitX.slope;  // px/s rightward
   const vy = fitY.slope;  // px/s downward in image coords
 
@@ -874,6 +870,37 @@ function fitShot(samples) {
   // Negate vy so positive angleDeg = upward, matching physical intuition.
   const angleDeg      = Math.atan2(-vy, Math.abs(vx)) * 180 / Math.PI;
   const speedPxPerSec = Math.hypot(vx, vy);
+
+  // At n=2, r²=1.0 always — two points are always a perfect line, so r² cannot
+  // distinguish signal from noise. Apply plausibility caps instead.
+  // At n≥3, r² is meaningful and we apply the quality gate normally.
+  if (samples.length < 3) {
+    if (speedPxPerSec < MIN_SPEED_PX || speedPxPerSec > MAX_SPEED_PX) {
+      return { ok: false, reason: `Speed implausible at 2 frames (${speedPxPerSec.toFixed(0)} px/s) — try again` };
+    }
+    if (Math.abs(angleDeg) > MAX_ABS_ANGLE) {
+      return { ok: false, reason: `Angle implausible at 2 frames (${angleDeg.toFixed(1)}°) — try again` };
+    }
+  } else {
+    // Minimum r² for both axes: anything below this is noise, not a real trajectory.
+    // Exception: flat-axis case — if total range is tiny, r² is undefined/unstable
+    // (a perfectly flat shot naturally produces r²≈0 when cy varies only 1px).
+    const MIN_R2       = 0.85;
+    const FLAT_AXIS_PX = 5; // px at 200×150; skip r² check when axis has <5px range
+
+    const xRange = Math.max(...xs) - Math.min(...xs);
+    const yRange = Math.max(...ys) - Math.min(...ys);
+
+    const xNoisy = fitX.r2 < MIN_R2 && xRange >= FLAT_AXIS_PX;
+    const yNoisy = fitY.r2 < MIN_R2 && yRange >= FLAT_AXIS_PX;
+
+    if (xNoisy || yNoisy) {
+      return {
+        ok: false,
+        reason: `Trajectory too noisy (r²x=${fitX.r2.toFixed(2)}, r²y=${fitY.r2.toFixed(2)}) — try again`,
+      };
+    }
+  }
 
   return {
     ok: true,
@@ -918,9 +945,21 @@ function fitShot(samples) {
     console.assert(r.r2 > 0.95,                     'linReg: noisy r²>0.95 (±0.8px noise on 8px range → expect ~0.97)'); }
 
   // --- fitShot tests ---
-  // Too few samples → rejected
-  { const r = fitShot([{cx:100,cy:80,t:0},{cx:110,cy:75,t:0.033},{cx:120,cy:70,t:0.067}]);
-    console.assert(!r.ok,                            'fitShot: 3 samples → rejected'); }
+  // Exactly 1 sample → rejected (below MIN_FRAMES=2)
+  { const r = fitShot([{cx:100,cy:80,t:0}]);
+    console.assert(!r.ok,                            'fitShot: 1 sample → rejected'); }
+
+  // Exactly 2 samples, plausible speed/angle → accepted (r² not checked at n=2)
+  { const samples = [{cx:50,cy:80,t:0},{cx:80,cy:70,t:0.033}];
+    const r = fitShot(samples);
+    console.assert(r.ok,                             'fitShot: 2 samples plausible → accepted');
+    console.assert(r.frameCount === 2,               'fitShot: frameCount=2'); }
+
+  // 2 samples, zero displacement → speed too low → rejected
+  { const samples = [{cx:100,cy:80,t:0},{cx:100,cy:80,t:0.033}];
+    const r = fitShot(samples);
+    console.assert(!r.ok,                            'fitShot: 2 samples zero-speed → rejected');
+    console.assert(r.reason && r.reason.includes('implausible'), 'fitShot: 2-frame reason mentions implausible'); }
 
   // Exactly 4 samples, clean rightward + upward trajectory
   // Ball moves right 200px/s, up 150px/s (vy=-150 in image coords) over 4 frames at 30fps
@@ -1229,22 +1268,31 @@ function logShot(result) {
   const empty = ol.querySelector('.shot-log-empty');
   if (empty) empty.remove();
 
+  // Consume intent flag — clears after one shot regardless of outcome.
+  // Also cancel the expiry timer so it doesn't fire after the shot is already logged.
+  const isIntent = intentPending;
+  intentPending  = false;
+  if (intentTimer) { clearTimeout(intentTimer); intentTimer = null; }
+
   shotLogCount++;
   const now = new Date();
   const ts  = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+  // Intent badge prepended to log-result when voice-tagged
+  const badge = isIntent ? '<span class="log-intent-badge">⚑ swing</span>' : '';
+
   const li = document.createElement('li');
   if (result.ok) {
-    li.className = 'shot-log-item';
+    li.className = 'shot-log-item' + (isIntent ? ' intent' : '');
     li.innerHTML =
-      `<span class="log-result">#${shotLogCount} · ${result.angleDeg.toFixed(1)}° · ${result.speedPxPerSec.toFixed(0)} px/s</span>` +
+      `<span class="log-result">${badge}#${shotLogCount} · ${result.angleDeg.toFixed(1)}° · ${result.speedPxPerSec.toFixed(0)} px/s</span>` +
       `<span class="log-meta">${result.frameCount} frames · ${ts}</span>`;
   } else {
     // Truncate reason at first sentence/clause so it fits in one log line.
     const shortReason = (result.reason || 'unknown').split('—')[0].split('.')[0].trim();
-    li.className = 'shot-log-item rejected';
+    li.className = 'shot-log-item rejected' + (isIntent ? ' intent' : '');
     li.innerHTML =
-      `<span class="log-result">#${shotLogCount} · ${shortReason}</span>` +
+      `<span class="log-result">${badge}#${shotLogCount} · ${shortReason}</span>` +
       `<span class="log-meta">${result.frameCount} frame${result.frameCount === 1 ? '' : 's'} · ${ts}</span>`;
   }
 
@@ -1541,6 +1589,75 @@ function updateSliderLabels() {
   cam.valVal.textContent = cam.valMin.value + '%';
 }
 updateSliderLabels();
+
+/*
+ * Voice command: "swing attempt"
+ *
+ * When SpeechRecognition hears the phrase, sets intentPending=true so the next
+ * shot logged (captured OR rejected) is tagged as an intentional swing attempt
+ * in the shot log. The flag is consumed and cleared by logShot().
+ *
+ * Uses continuous recognition so the user never needs to tap anything —
+ * just says "swing attempt" before stepping up to hit.
+ *
+ * Available in Chrome (window.SpeechRecognition || window.webkitSpeechRecognition).
+ * Silently skipped on browsers without support (Firefox, Safari without flag).
+ */
+let intentPending = false;
+let intentTimer   = null;  // expires the intent tag if no shot fires within the window
+const INTENT_WINDOW_MS = 4000; // ms after "swing" before the tag silently expires
+
+(function initVoiceIntent() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    console.log('[golf-tracker] SpeechRecognition not available — voice intent disabled');
+    return;
+  }
+
+  const recog = new SR();
+  recog.continuous   = true;
+  recog.interimResults = false;
+  recog.lang         = 'en-US';
+
+  recog.onresult = (event) => {
+    // Only look at the most recent final result
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      if (!event.results[i].isFinal) continue;
+      const heard = event.results[i][0].transcript.trim().toLowerCase();
+      if (heard.includes('swing')) {
+        // Arm the tag with a hard expiry window — if no shot fires within
+        // INTENT_WINDOW_MS the flag self-clears, so incidental motion after
+        // the window doesn't wrongly claim the tag.
+        if (intentTimer) clearTimeout(intentTimer);
+        intentPending = true;
+        intentTimer = setTimeout(() => {
+          intentPending = false;
+          intentTimer   = null;
+          console.log('[golf-tracker] voice: intent tag expired (no shot in window)');
+        }, INTENT_WINDOW_MS);
+        console.log('[golf-tracker] voice: "swing" heard — tag armed for ' + INTENT_WINDOW_MS + 'ms');
+        announce('tagged');
+      }
+    }
+  };
+
+  recog.onerror = (e) => {
+    // 'no-speech' and 'aborted' are benign — don't log them as errors
+    if (e.error !== 'no-speech' && e.error !== 'aborted') {
+      console.warn('[golf-tracker] SpeechRecognition error:', e.error);
+    }
+  };
+
+  // Auto-restart on end (continuous mode can still end on mobile after silence)
+  recog.onend = () => { try { recog.start(); } catch(_) {} };
+
+  try {
+    recog.start();
+    console.log('[golf-tracker] voice intent recognition active — say "swing attempt" before hitting');
+  } catch (e) {
+    console.warn('[golf-tracker] SpeechRecognition start failed:', e);
+  }
+})();
 
 /*
  * Gate #2 — OpenCV.js HSV contour detection
