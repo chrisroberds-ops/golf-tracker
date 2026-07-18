@@ -1715,6 +1715,25 @@ function opencvDetectionTick() {
       octx.restore();
     }
 
+    // Verbose per-frame log, active only when it matters for swing diagnosis:
+    //   - IDLE + armed (restFrames ≥ MIN_REST_FRAMES): we're about to swing — log every frame
+    //     so we can see whether detection fires, drops, or never sees the ball during the swing
+    //   - trigger-candidate state (triggerFrames > 0): waiting for confirmation frame
+    //   - SHOT: already logged inside updateShotStateMachine
+    // Skipped during arm-up, cooldown, and waiting-clear to avoid console noise.
+    const _armed = shotState === 'IDLE' && restFrames >= MIN_REST_FRAMES;
+    const _candidate = shotState === 'IDLE' && triggerFrames > 0;
+    if (_armed || _candidate) {
+      const cx_ = detCx !== null ? detCx.toFixed(1) : '–';
+      const cy_ = detCy !== null ? detCy.toFixed(1) : '–';
+      const area_ = found ? Math.round(bestArea) : 0;
+      console.log(
+        '[golf-tracker] frame t=' + cam.video.currentTime.toFixed(3),
+        found ? 'FOUND cx=' + cx_ + ' cy=' + cy_ + ' area=' + area_ : 'NOT-FOUND',
+        '| state=' + shotState + ' restF=' + restFrames + ' trigF=' + triggerFrames
+      );
+    }
+
     // Feed into shot state machine using video.currentTime (seconds) as the timestamp.
     // currentTime is monotonically increasing and frame-accurate at 30fps.
     updateShotStateMachine(found, detCx, detCy, cam.video.currentTime);
