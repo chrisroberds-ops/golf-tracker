@@ -846,8 +846,21 @@ function fitShot(samples) {
   // Minimum r² for both axes: anything below this is noise, not a real trajectory.
   // r²=0.2 on both axes (as seen on false triggers) means the regression is
   // essentially random. 0.85 still passes genuine fast-ball captures with some noise.
-  const MIN_R2 = 0.85;
-  if (fitX.r2 < MIN_R2 || fitY.r2 < MIN_R2) {
+  //
+  // Exception: when an axis has very little total range, r² becomes mathematically
+  // unstable — a perfectly flat line (cy varies only 1px) can produce r²=0.0 even
+  // though the path is completely clean. Skip the r² check for that axis when its
+  // value range is below FLAT_AXIS_PX (the ball genuinely barely moved on that axis).
+  const MIN_R2       = 0.85;
+  const FLAT_AXIS_PX = 5; // detection-canvas px; 5px at 200×150 ≈ 2.5% of frame height
+
+  const xRange = Math.max(...xs) - Math.min(...xs);
+  const yRange = Math.max(...ys) - Math.min(...ys);
+
+  const xNoisy = fitX.r2 < MIN_R2 && xRange >= FLAT_AXIS_PX;
+  const yNoisy = fitY.r2 < MIN_R2 && yRange >= FLAT_AXIS_PX;
+
+  if (xNoisy || yNoisy) {
     return {
       ok: false,
       reason: `Trajectory too noisy (r²x=${fitX.r2.toFixed(2)}, r²y=${fitY.r2.toFixed(2)}) — try again`,
@@ -929,7 +942,7 @@ function fitShot(samples) {
     console.assert(r.angleDeg > 25 && r.angleDeg < 45, 'fitShot: noisy angle in plausible range');
     console.assert(r.r2x > 0.98 && r.r2y > 0.98,   'fitShot: noisy r²>0.98 on both axes'); }
 
-  // 4 jitter-only samples — centroid bouncing randomly, should be rejected for low r²
+  // 4 jitter-only samples — cy has large range (103px) but is pure noise → low r² → reject
   { const ts = [0, 0.033, 0.067, 0.1];
     const samples = [
       { cx: 100, cy: 122, t: ts[0] },
@@ -940,6 +953,18 @@ function fitShot(samples) {
     const r = fitShot(samples);
     console.assert(!r.ok, 'fitShot: cy spike → rejected for low r²');
     console.assert(r.reason && r.reason.includes('noisy'), 'fitShot: reason mentions noisy'); }
+
+  // 8 flat-shot samples — cx moves steadily right, cy barely changes (1px range).
+  // r²y is undefined/low due to near-zero variance on y — should be accepted, not rejected.
+  { const ts = [0, 0.033, 0.067, 0.1, 0.133, 0.167, 0.2, 0.233];
+    const samples = ts.map((t, i) => ({
+      cx: 40 + 150*t,
+      cy: 80 + (i % 2 === 0 ? 0 : 1), // cy oscillates 80/81 — 1px range total
+      t,
+    }));
+    const r = fitShot(samples);
+    console.assert(r.ok, 'fitShot: flat shot (cy range=1px) → accepted despite low r²y');
+    console.assert(r.angleDeg > -10 && r.angleDeg < 10, 'fitShot: flat shot angle near 0°'); }
 
   console.log('[golf-tracker] regression self-tests passed');
 })();
