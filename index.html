@@ -1638,14 +1638,37 @@ function opencvDetectionTick() {
     cv.erode(mask,  mask, kernel);
     cv.dilate(mask, mask, kernel);
 
+    // Saturated-mask guard: if >30% of the detection canvas matches the color mask,
+    // this is almost certainly a motion-blurred frame smearing the ball color across
+    // a large area. findContours on a large connected blob can take 100ms+ (O(perimeter)
+    // in the contour point array), blocking the main thread for seconds.
+    // Bail early — log the frame as a known-bad skip and move on.
+    const FRAME_PIXELS  = DETECT_W * DETECT_H;          // 200×150 = 30,000
+    const MAX_MASK_FILL = FRAME_PIXELS * 0.30;           // 9,000 px²
+    const maskFill = cv.countNonZero(mask);
+    if (maskFill > MAX_MASK_FILL) {
+      const octxSkip = cam.overlay.getContext('2d');
+      octxSkip.clearRect(0, 0, cam.overlay.width, cam.overlay.height);
+      cam.foundMetric.textContent = 'blur';
+      cam.pxMetric.textContent    = maskFill;
+      console.log('[golf-tracker] frame SKIPPED — mask saturated (' + maskFill + ' px, ' + (maskFill/FRAME_PIXELS*100).toFixed(0) + '%) likely motion blur');
+      updateShotStateMachine(false, null, null, cam.video.currentTime);
+      // Skip to finally via a clean early-exit flag rather than throwing
+      // (throwing would be caught and show ERR; we want a non-error skip)
+      return;  // finally still runs — all Mats will be deleted
+    }
+
     // External contours only — balls project as filled blobs, hierarchy not needed
     cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-    // Largest contour by area = best ball candidate
+    // Largest contour by area = best ball candidate.
+    // Cap accepted contour area at 15% of frame — a golf ball blob at any realistic
+    // distance is a small fraction of the detection canvas.
+    const MAX_BLOB_AREA = FRAME_PIXELS * 0.15;           // 4,500 px²
     let bestIdx = -1, bestArea = 0;
     for (let i = 0; i < contours.size(); i++) {
       const a = cv.contourArea(contours.get(i));
-      if (a > bestArea) { bestArea = a; bestIdx = i; }
+      if (a > bestArea && a <= MAX_BLOB_AREA) { bestArea = a; bestIdx = i; }
     }
 
     const octx = cam.overlay.getContext('2d');
@@ -1743,8 +1766,10 @@ function opencvDetectionTick() {
     console.error('[golf-tracker] OpenCV detection error:', err, err?.stack);
     cam.foundMetric.textContent = 'ERR';
   } finally {
-    // Every Mat must be deleted — no GC in WASM heap
-    // _bound* Mats are pre-allocated for the session — do NOT delete them here
+    // Every Mat must be deleted — no GC in WASM heap.
+    // _bound* Mats are pre-allocated for the session — do NOT delete them here.
+    // Note: these guards handle the early-return (saturated mask) path where some
+    // Mats were never allocated; null-check prevents double-free errors.
     if (rgba)      rgba.delete();
     if (rgb)       rgb.delete();
     if (hsv)       hsv.delete();
@@ -1753,19 +1778,37 @@ function opencvDetectionTick() {
     if (kernel)    kernel.delete();
     if (contours)  contours.delete();
     if (hierarchy) hierarchy.delete();
+
+    // Always update CV time and re-arm the loop, even on early-exit paths.
+    // If we returned early above (saturated mask), this still runs via finally.
+    cam.cvTimeMetric.textContent = (performance.now() - t0).toFixed(1) + ' ms';
+    requestAnimationFrame(opencvDetectionTick);
   }
-
-  // Show per-frame CV time so the user can confirm whether optimizations recovered
-  // the 30fps ceiling. If this reads >33ms, we're still dropping camera frames.
-  const dt = performance.now() - t0;
-  cam.cvTimeMetric.textContent = dt.toFixed(1) + ' ms';
-
-  requestAnimationFrame(opencvDetectionTick);
 }
 
 cam.lockBtn.addEventListener('click', lockFocusExposure);
 cam.restartBtn.addEventListener('click', () => startCamera(cam.deviceSelect.value));
 cam.deviceSelect.addEventListener('change', () => startCamera(cam.deviceSelect.value));
+// Heartbeat: fires every 500ms via setInterval, completely independent of the
+// OpenCV/rAF loop. If the main thread freezes (synchronous WASM stall), setInterval
+// callbacks queue up and fire in a burst when the thread unblocks — so you'll see
+// a gap in heartbeat timestamps corresponding exactly to the freeze duration.
+// Started/stopped alongside detection.
+let _heartbeatTimer = null;
+let _heartbeatSeq   = 0;
+
+function startHeartbeat() {
+  if (_heartbeatTimer) return;
+  _heartbeatSeq = 0;
+  _heartbeatTimer = setInterval(() => {
+    _heartbeatSeq++;
+    console.log('[golf-tracker] ♥ heartbeat #' + _heartbeatSeq + ' t=' + performance.now().toFixed(0) + 'ms state=' + shotState);
+  }, 500);
+}
+function stopHeartbeat() {
+  if (_heartbeatTimer) { clearInterval(_heartbeatTimer); _heartbeatTimer = null; }
+}
+
 cam.detectToggle.addEventListener('click', () => {
   detecting = !detecting;
   cam.detectToggle.textContent = detecting ? 'Stop Detection' : 'Start Detection';
@@ -1776,7 +1819,10 @@ cam.detectToggle.addEventListener('click', () => {
     shotSamples = []; missCount = 0; clearCount = 0;
     if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null; }
     setShotStatus('Hold ball still in frame to arm…', '');
+    startHeartbeat();
     requestAnimationFrame(opencvDetectionTick);
+  } else {
+    stopHeartbeat();
   }
 });
 
