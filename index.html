@@ -843,6 +843,17 @@ function fitShot(samples) {
   const fitX = linReg(xs, ts);
   const fitY = linReg(ys, ts);
 
+  // Minimum r² for both axes: anything below this is noise, not a real trajectory.
+  // r²=0.2 on both axes (as seen on false triggers) means the regression is
+  // essentially random. 0.85 still passes genuine fast-ball captures with some noise.
+  const MIN_R2 = 0.85;
+  if (fitX.r2 < MIN_R2 || fitY.r2 < MIN_R2) {
+    return {
+      ok: false,
+      reason: `Trajectory too noisy (r²x=${fitX.r2.toFixed(2)}, r²y=${fitY.r2.toFixed(2)}) — try again`,
+    };
+  }
+
   const vx = fitX.slope;  // px/s rightward
   const vy = fitY.slope;  // px/s downward in image coords
 
@@ -909,7 +920,7 @@ function fitShot(samples) {
     console.assert(r.angleDeg > 30 && r.angleDeg < 40, 'fitShot: angle 30-40° for 200/150 vector');
     console.assert(r.frameCount === 4,               'fitShot: frameCount=4'); }
 
-  // 6 noisy samples — regression should still give reasonable angle
+  // 6 noisy samples — small noise relative to trajectory span, r² should be >0.98
   { const ts = [0, 0.033, 0.067, 0.1, 0.133, 0.167];
     const noise = [1,-1,0.5,-0.5,0.8,-0.3];
     const samples = ts.map((t, i) => ({ cx: 50 + 180*t + noise[i], cy: 75 - 120*t + noise[i], t }));
@@ -917,6 +928,18 @@ function fitShot(samples) {
     console.assert(r.ok,                             'fitShot: 6 noisy samples → accepted');
     console.assert(r.angleDeg > 25 && r.angleDeg < 45, 'fitShot: noisy angle in plausible range');
     console.assert(r.r2x > 0.98 && r.r2y > 0.98,   'fitShot: noisy r²>0.98 on both axes'); }
+
+  // 4 jitter-only samples — centroid bouncing randomly, should be rejected for low r²
+  { const ts = [0, 0.033, 0.067, 0.1];
+    const samples = [
+      { cx: 100, cy: 122, t: ts[0] },
+      { cx: 100, cy:  19, t: ts[1] },  // wild one-frame spike (color glitch elsewhere)
+      { cx: 100, cy: 123, t: ts[2] },
+      { cx: 100, cy: 122, t: ts[3] },
+    ];
+    const r = fitShot(samples);
+    console.assert(!r.ok, 'fitShot: cy spike → rejected for low r²');
+    console.assert(r.reason && r.reason.includes('noisy'), 'fitShot: reason mentions noisy'); }
 
   console.log('[golf-tracker] regression self-tests passed');
 })();
@@ -956,6 +979,8 @@ let shotState     = 'IDLE';  // 'IDLE' | 'SHOT' | 'COOLDOWN' | 'WAITING_CLEAR'
 let restX         = null;    // EMA of resting centroid x (detection-canvas coords)
 let restY         = null;
 let restFrames    = 0;       // consecutive frames the ball has been at rest
+let triggerFrames = 0;       // consecutive above-threshold frames before committing to SHOT
+let triggerSample = null;    // { cx, cy, t } from the first above-threshold frame
 let shotSamples   = [];      // { cx, cy, t } accumulated during SHOT
 let missCount     = 0;       // consecutive missed frames during SHOT
 let stallCount    = 0;       // consecutive low-velocity frames during SHOT
@@ -998,7 +1023,7 @@ function updateShotStateMachine(found, cx, cy, t) {
   if (shotState === 'IDLE') {
     if (!found) {
       // Ball not visible — reset rest tracking, keep waiting
-      restX = null; restY = null; restFrames = 0;
+      restX = null; restY = null; restFrames = 0; triggerFrames = 0; triggerSample = null;
       setShotStatus('Hold ball still in frame to arm…', '');
       return;
     }
@@ -1013,20 +1038,36 @@ function updateShotStateMachine(found, cx, cy, t) {
     cam.dispMetric.textContent = disp.toFixed(1) + ' px';
 
     if (disp > MOTION_THRESHOLD) {
-      // Ball broke the threshold — but only trigger if we've had a stable resting read
       if (restFrames >= MIN_REST_FRAMES) {
-        shotState   = 'SHOT';
-        shotSamples = [{ cx, cy, t }];
-        missCount   = 0;
-        stallCount  = 0;
-        setShotStatus('Shot in progress…', 'active');
-        console.log('[golf-tracker] SHOT started — restFrames:', restFrames, 'trigger disp:', disp.toFixed(1), 'restXY:', restX?.toFixed(1), restY?.toFixed(1));
+        // Require 2 consecutive above-threshold frames to commit to SHOT.
+        // A single noisy centroid (color glitch elsewhere in frame) can spike disp
+        // to 70+ px on a stationary ball — one frame is not enough evidence of real motion.
+        triggerFrames++;
+        if (triggerFrames === 1) {
+          // First hit: store candidate, wait for confirmation next frame.
+          triggerSample = { cx, cy, t };
+          setShotStatus('Motion detected…', 'active');
+          console.log('[golf-tracker] trigger candidate — disp:', disp.toFixed(1), 'waiting for confirmation');
+        } else {
+          // Second consecutive hit: real motion confirmed, commit to SHOT.
+          shotState     = 'SHOT';
+          shotSamples   = [triggerSample, { cx, cy, t }]; // seed with both frames
+          missCount     = 0;
+          stallCount    = 0;
+          triggerFrames = 0;
+          triggerSample = null;
+          setShotStatus('Shot in progress…', 'active');
+          console.log('[golf-tracker] SHOT started — restFrames:', restFrames, 'confirm disp:', disp.toFixed(1));
+        }
       } else {
         // Not enough stable rest frames yet — reset and wait (avoids triggering on
         // the ball being placed into frame)
-        restX = cx; restY = cy; restFrames = 0;
+        restX = cx; restY = cy; restFrames = 0; triggerFrames = 0; triggerSample = null;
       }
     } else {
+      // Below threshold — cancel any pending trigger
+      triggerFrames = 0;
+      triggerSample = null;
       const wasArmed = restFrames >= MIN_REST_FRAMES;
       restFrames++;
       if (restFrames >= MIN_REST_FRAMES) {
@@ -1053,7 +1094,7 @@ function updateShotStateMachine(found, cx, cy, t) {
       console.log('[golf-tracker] shot discarded: exceeded MAX_SHOT_FRAMES', shotSamples.length);
       if (cooldownTimer) clearTimeout(cooldownTimer);
       cooldownTimer = setTimeout(() => {
-        shotState = 'WAITING_CLEAR'; shotSamples = []; missCount = 0; stallCount = 0; clearCount = 0;
+        shotState = 'WAITING_CLEAR'; shotSamples = []; missCount = 0; stallCount = 0; triggerFrames = 0; triggerSample = null; clearCount = 0;
         setShotStatus('Waiting for frame to clear…', '');
       }, COOLDOWN_MS);
       return;
@@ -1131,7 +1172,7 @@ function finalizeShotCapture() {
   if (cooldownTimer) clearTimeout(cooldownTimer);
   cooldownTimer = setTimeout(() => {
     shotState   = 'WAITING_CLEAR';
-    shotSamples = []; missCount = 0; stallCount = 0;
+    shotSamples = []; missCount = 0; stallCount = 0; triggerFrames = 0; triggerSample = null;
     clearCount  = 0;
     setShotStatus('Waiting for frame to clear…', '');
   }, COOLDOWN_MS);
