@@ -2121,8 +2121,12 @@ game.viewport.addEventListener('click', (e) => {
   const px  = ((e.clientX - vp.left) / vp.width  * 100).toFixed(1);
   const py  = ((e.clientY - vp.top)  / vp.height * 100).toFixed(1);
   const bucket = pickBucket(state.targetYards);
-  console.log(`[golf-tracker] Calibrate Pin — bucket ${bucket}yd: pinX=${px}%, pinY=${py}%`);
-  alert(`Bucket ${bucket}yd pin: pinX=${px}%, pinY=${py}%\n\nUpdate PHOTOS[${bucket}] in the code if correct.`);
+  // Diagnostic: log the full rect so we can confirm the measured box matches
+  // the visible photo area and isn't including extra chrome above/below.
+  console.log(`[golf-tracker] Calibrate Pin — viewport rect: top=${vp.top.toFixed(1)} left=${vp.left.toFixed(1)} w=${vp.width.toFixed(1)} h=${vp.height.toFixed(1)}`);
+  console.log(`[golf-tracker] Calibrate Pin — click: clientX=${e.clientX.toFixed(1)} clientY=${e.clientY.toFixed(1)} → pinX=${px}% pinY=${py}% (bucket ${bucket}yd)`);
+  // Show result on-screen in the result line — no blocking popup.
+  game.result.innerHTML = `Pin calibration (${bucket}yd): <span class="big">pinX=${px}% pinY=${py}%</span> — update PHOTOS[${bucket}] if correct`;
 });
 
 function renderLetters() {
