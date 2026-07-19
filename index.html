@@ -313,47 +313,45 @@ var Module = {
   }
 
   /* ======================================================
-     GAME VIEW
-     Lifted from golf_green_prototype.html — no logic changes.
+     GAME VIEW — photo-based green display
+     Photo viewport + scoring overlay; replaces flat CSS trapezoid.
      ====================================================== */
   #gameView{
-    height:calc(100vh - 53px); /* subtract nav height */
+    height:calc(100vh - 53px);
     position:relative;
     display:none;
     flex-direction:column;
-    background:
-      radial-gradient(ellipse at 50% -10%, rgba(45,106,79,0.25), transparent 60%),
-      var(--turf-deep);
+    background:var(--turf-deep);
     overflow:hidden;
   }
   #gameView.active{ display:flex; }
 
+  /* ---- scoreboard (sits above photo viewport) ---- */
   .scoreboard{
     display:flex; justify-content:space-between; align-items:center;
-    padding:18px 40px 8px;
-    z-index:5;
+    padding:10px 28px 6px;
+    z-index:5; flex-shrink:0;
   }
   .player{
-    display:flex; flex-direction:column; gap:6px;
-    min-width:180px;
+    display:flex; flex-direction:column; gap:4px;
+    min-width:140px;
     opacity:0.55;
     transition:opacity .4s ease;
   }
   .player.active{ opacity:1; }
   .player.p2{ align-items:flex-end; }
   .player-name{
-    font-size:13px; letter-spacing:.14em; text-transform:uppercase;
+    font-size:12px; letter-spacing:.12em; text-transform:uppercase;
     color:var(--chalk-dim); font-weight:700;
   }
-  .letters{ display:flex; gap:6px; }
+  .letters{ display:flex; gap:5px; }
   .letters.p2{ flex-direction:row-reverse; }
   .letter{
-    width:30px; height:36px;
+    width:26px; height:32px;
     border:1.5px solid rgba(241,240,232,0.25);
     border-radius:4px;
     display:flex; align-items:center; justify-content:center;
-    font-family:'Anton',sans-serif;
-    font-size:19px;
+    font-family:'Anton',sans-serif; font-size:17px;
     color:rgba(241,240,232,0.25);
   }
   .letter.lit{
@@ -363,101 +361,90 @@ var Module = {
   }
   .center-meta{ text-align:center; }
   .target-label{
-    font-size:12px; letter-spacing:.16em; text-transform:uppercase;
-    color:var(--chalk-dim); margin-bottom:2px;
+    font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--chalk-dim); margin-bottom:1px;
   }
   .target-yards{
-    font-family:'Anton',sans-serif;
-    font-size:30px; color:var(--sand); line-height:1;
+    font-family:'Anton',sans-serif; font-size:26px; color:var(--sand); line-height:1;
   }
 
-  .green-wrap{
-    flex:1; position:relative;
-    perspective:900px;
-    display:flex; align-items:center; justify-content:center;
+  /* ---- photo viewport ---- */
+  .photo-viewport{
+    position:relative; flex:1; overflow:hidden; background:#000;
   }
-  .green{
-    position:relative;
-    width:70vw; max-width:820px; height:64vh;
-    transform:rotateX(52deg);
-    transform-style:preserve-3d;
-  }
-  .turf{
+  .photo-layer{
     position:absolute; inset:0;
-    background:
-      repeating-linear-gradient(180deg,
-        var(--turf-mid) 0px, var(--turf-mid) 40px,
-        var(--turf-line) 40px, var(--turf-line) 42px),
-      var(--turf-mid);
-    border-radius:50%/12%;
-    box-shadow:0 0 0 3px rgba(241,240,232,0.06), 0 40px 90px rgba(0,0,0,0.55);
+    background-size:cover; background-position:center;
+    opacity:0; transition:opacity .5s ease, transform .6s cubic-bezier(.22,.61,.36,1);
+    transform:scale(1);
   }
-  .ring{
-    position:absolute;
-    border:2px dashed rgba(241,240,232,0.22);
-    border-radius:50%;
-    left:50%; top:78%;
-    transform:translate(-50%,-50%);
-  }
-  .pin{
-    position:absolute; left:50%; top:78%;
-    transform:translate(-50%,-100%);
-    display:flex; flex-direction:column; align-items:center;
-    z-index:4;
-  }
-  .flagstick{ width:3px; height:90px; background:var(--chalk-dim); }
-  .flag{
-    position:absolute; top:0; left:1.5px;
-    width:34px; height:22px;
-    background:var(--flag-red);
-    clip-path:polygon(0 0, 100% 20%, 0 100%);
-  }
-  .cup{
-    width:16px; height:8px; border-radius:50%;
-    background:#04100A;
-    box-shadow:inset 0 2px 4px rgba(0,0,0,0.8);
-    margin-top:-4px;
+  .photo-layer.active{ opacity:1; }
+  .vignette{
+    position:absolute; inset:0; pointer-events:none; z-index:3;
+    background:radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.35) 100%);
   }
 
-  .ball{
-    position:absolute;
-    width:14px; height:14px; border-radius:50%;
-    background:radial-gradient(circle at 35% 30%, #fff, #d8d8d8 60%, #b7b7b7);
-    left:50%; top:100%;
-    transform:translate(-50%,-50%) scale(1);
-    box-shadow:0 0 0 rgba(0,0,0,0);
-    z-index:6; opacity:0;
+  /* ---- proximity box (distance to pin) ---- */
+  .proximity-box{
+    position:absolute; top:14px; left:14px; z-index:6;
+    background:rgba(13,31,23,0.82);
+    border:1px solid rgba(241,240,232,0.15);
+    border-radius:10px; padding:10px 14px;
+    backdrop-filter:blur(4px); min-width:130px;
+    opacity:0; transform:translateY(-6px);
+    transition:opacity .35s ease, transform .35s ease;
   }
+  .proximity-box.show{ opacity:1; transform:translateY(0); }
+  .proximity-box .prox-label{
+    font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--chalk-dim); margin-bottom:3px;
+  }
+  .proximity-box .prox-value{
+    font-family:'Anton',sans-serif; font-size:22px; color:var(--chalk); line-height:1;
+  }
+  .proximity-box .prox-value .unit{
+    font-family:'Manrope',sans-serif; font-size:12px; color:var(--chalk-dim); margin-left:3px;
+  }
+  .proximity-box.miss .prox-value{ color:var(--flag-red); font-size:15px; }
+
+  /* ---- ball marker + shadow (grounded on photo) ---- */
   .ball-shadow{
-    position:absolute;
+    position:absolute; z-index:5; pointer-events:none;
     width:16px; height:6px; border-radius:50%;
-    background:var(--shadow-ball);
-    left:50%; top:100%;
-    transform:translate(-50%,0) scale(1);
-    filter:blur(1px);
-    opacity:0; z-index:3;
+    background:rgba(0,0,0,0.4); filter:blur(1.5px);
+    opacity:0; transform:translate(-50%,-50%);
+  }
+  .ball-marker{
+    position:absolute; z-index:6; pointer-events:none;
+    width:12px; height:12px; border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #fff, #d8d8d8 60%, #b7b7b7);
+    box-shadow:0 2px 6px rgba(0,0,0,0.5);
+    opacity:0; transform:translate(-50%,-50%);
   }
 
+  /* ---- footer: result text + buttons ---- */
   .footer{
-    position:relative;
-    padding:14px 40px 28px;
+    position:relative; flex-shrink:0;
+    padding:10px 28px 18px;
     display:flex; align-items:center; justify-content:center;
-    gap:28px; z-index:5;
+    gap:20px; z-index:5;
+    background:rgba(13,31,23,0.75); backdrop-filter:blur(3px);
   }
   .result{
     font-family:'Anton',sans-serif;
-    font-size:15px; color:var(--chalk-dim);
-    letter-spacing:.04em; min-height:22px; text-align:center;
+    font-size:14px; color:var(--chalk-dim);
+    letter-spacing:.03em; min-height:20px; text-align:center;
   }
-  .result .big{ font-size:22px; color:var(--chalk); }
+  .result .big{ font-size:20px; color:var(--chalk); }
 
   .game-btn{
     appearance:none; border:none; cursor:pointer;
     font-family:'Manrope',sans-serif; font-weight:700;
-    font-size:14px; letter-spacing:.04em;
-    padding:13px 26px; border-radius:8px;
+    font-size:13px; letter-spacing:.04em;
+    padding:11px 20px; border-radius:8px;
     background:var(--flag-red); color:var(--chalk);
     transition:transform .12s ease, background .2s ease;
+    white-space:nowrap;
   }
   .game-btn:hover{ background:#D6543F; }
   .game-btn:active{ transform:scale(0.96); }
@@ -467,17 +454,36 @@ var Module = {
   }
   .game-btn.ghost:hover{ color:var(--chalk); border-color:var(--chalk-dim); }
 
+  /* ---- target select + calibrate pin (overlay controls top-right) ---- */
   .controls-row{
-    position:absolute; top:12px; right:20px;
+    position:absolute; top:10px; right:14px;
     display:flex; gap:8px; z-index:8;
   }
   .target-select{
     background:rgba(255,255,255,0.06);
     color:var(--chalk); border:1px solid rgba(241,240,232,0.25);
     border-radius:6px; font-family:'Manrope',sans-serif; font-size:12px;
-    padding:6px 8px;
+    padding:5px 7px;
   }
+  .calib-btn{
+    appearance:none; border:1px solid rgba(241,240,232,0.2); cursor:pointer;
+    background:rgba(13,31,23,0.7); backdrop-filter:blur(3px);
+    color:var(--chalk-dim); font-family:'Manrope',sans-serif;
+    font-size:11px; font-weight:700; letter-spacing:.06em;
+    padding:5px 9px; border-radius:6px;
+    transition:color .15s, border-color .15s;
+  }
+  .calib-btn:hover{ color:var(--chalk); border-color:var(--chalk-dim); }
+  .calib-btn.active{ color:var(--sand); border-color:var(--sand); }
+  .calib-hint{
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(13,31,23,0.88); padding:8px 14px;
+    font-size:11px; color:var(--chalk-dim); text-align:center; z-index:9;
+    display:none;
+  }
+  .calib-hint.show{ display:block; }
 
+  /* ---- winner overlay ---- */
   .winner-banner{
     position:fixed; inset:0; background:rgba(8,19,13,0.92);
     display:none; align-items:center; justify-content:center;
@@ -486,12 +492,6 @@ var Module = {
   .winner-banner.show{ display:flex; }
   .winner-banner h1{
     font-family:'Anton',sans-serif; font-size:54px; color:var(--sand); margin:0;
-  }
-
-  .demo-note{
-    position:absolute; bottom:8px; left:50%; transform:translateX(-50%);
-    font-size:11px; color:rgba(241,240,232,0.35); letter-spacing:.05em;
-    white-space:nowrap;
   }
 </style>
 </head>
@@ -640,17 +640,7 @@ var Module = {
 <!-- ======== GAME VIEW ======== -->
 <div class="view" id="gameView">
 
-  <div class="controls-row">
-    <select class="target-select" id="targetSelect">
-      <option value="20">20 yd</option>
-      <option value="30">30 yd</option>
-      <option value="40" selected>40 yd</option>
-      <option value="50">50 yd</option>
-      <option value="60">60 yd</option>
-      <option value="70">70 yd</option>
-    </select>
-  </div>
-
+  <!-- Scoreboard sits above the photo green -->
   <div class="scoreboard">
     <div class="player p1 active" id="p1box">
       <div class="player-name" id="p1name">Player 1</div>
@@ -666,19 +656,40 @@ var Module = {
     </div>
   </div>
 
-  <div class="green-wrap">
-    <div class="green" id="green">
-      <div class="turf"></div>
-      <div class="ring" id="ring5"></div>
-      <div class="ring" id="ring10"></div>
-      <div class="ring" id="ring20"></div>
-      <div class="pin">
-        <div class="flagstick"><div class="flag"></div></div>
-        <div class="cup"></div>
-      </div>
-      <div class="ball-shadow" id="ballShadow"></div>
-      <div class="ball" id="ball"></div>
+  <!-- Photo viewport — fills remaining height between scoreboard and footer -->
+  <div class="photo-viewport" id="photoViewport">
+    <div class="photo-layer" id="layer70" style="background-image:url('images/green-70.jpg')"></div>
+    <div class="photo-layer" id="layer50" style="background-image:url('images/green-50.jpg')"></div>
+    <div class="photo-layer" id="layer35" style="background-image:url('images/green-35.jpg')"></div>
+    <div class="vignette"></div>
+
+    <!-- Proximity box: distance to pin (or "Missed green") -->
+    <div class="proximity-box" id="proximityBox">
+      <div class="prox-label">Distance to Pin</div>
+      <div class="prox-value" id="proximityValue">--</div>
     </div>
+
+    <!-- Ball marker + grounding shadow — positioned in JS via left/top px -->
+    <div class="ball-shadow" id="ballShadow"></div>
+    <div class="ball-marker" id="ballMarker"></div>
+
+    <!-- Calibrate-pin hint (shown when calibration mode is active) -->
+    <div class="calib-hint" id="calibHint">
+      Calibration mode: set target to this photo's base distance (35/50/70 yd exactly), then click the flag's base in the photo.
+    </div>
+  </div>
+
+  <!-- Target select + Calibrate Pin in top-right of viewport -->
+  <div class="controls-row">
+    <select class="target-select" id="targetSelect">
+      <option value="20">20 yd</option>
+      <option value="30">30 yd</option>
+      <option value="40" selected>40 yd</option>
+      <option value="50">50 yd</option>
+      <option value="60">60 yd</option>
+      <option value="70">70 yd</option>
+    </select>
+    <button class="calib-btn" id="calibrateBtn">Calibrate Pin</button>
   </div>
 
   <div class="footer">
@@ -687,7 +698,6 @@ var Module = {
     <button class="game-btn" id="shotBtn">Simulate Shot ⛳</button>
   </div>
 
-  <div class="demo-note">Demo mode — shots are simulated. Real tracker wired in Gate #5.</div>
 </div>
 
 <!-- winner overlay (game view) -->
@@ -710,7 +720,9 @@ function switchView(view) {
   } else {
     document.getElementById('gameView').classList.add('active');
     document.getElementById('tabGame').classList.add('active');
-    sizeRings(); // green rings need a layout pass
+    // Trigger a display update so the photo layer is shown at the correct
+    // zoom immediately when the tab is switched (getBoundingClientRect needs layout).
+    requestAnimationFrame(() => updatePhotoDisplay(state.targetYards));
   }
 }
 
@@ -1958,7 +1970,7 @@ cam.detectToggle.addEventListener('click', () => {
 })();
 
 /* =====================================================================
-   GAME — lifted verbatim from golf_green_prototype.html
+   GAME — photo-based green display
    ===================================================================== */
 const LETTERS = ['G', 'O', 'L', 'F'];
 
@@ -1972,38 +1984,146 @@ const state = {
 };
 
 const game = {
-  p1box: document.getElementById('p1box'),
-  p2box: document.getElementById('p2box'),
-  p1letters: document.getElementById('p1letters'),
-  p2letters: document.getElementById('p2letters'),
-  result: document.getElementById('result'),
-  ball: document.getElementById('ball'),
-  ballShadow: document.getElementById('ballShadow'),
-  shotBtn: document.getElementById('shotBtn'),
-  resetBtn: document.getElementById('resetBtn'),
+  p1box:        document.getElementById('p1box'),
+  p2box:        document.getElementById('p2box'),
+  p1letters:    document.getElementById('p1letters'),
+  p2letters:    document.getElementById('p2letters'),
+  result:       document.getElementById('result'),
+  ballMarker:   document.getElementById('ballMarker'),
+  ballShadow:   document.getElementById('ballShadow'),
+  shotBtn:      document.getElementById('shotBtn'),
+  resetBtn:     document.getElementById('resetBtn'),
   targetSelect: document.getElementById('targetSelect'),
-  targetYards: document.getElementById('targetYards'),
+  targetYards:  document.getElementById('targetYards'),
   winnerBanner: document.getElementById('winnerBanner'),
-  winnerText: document.getElementById('winnerText'),
+  winnerText:   document.getElementById('winnerText'),
   playAgainBtn: document.getElementById('playAgainBtn'),
-  ring5: document.getElementById('ring5'),
-  ring10: document.getElementById('ring10'),
-  ring20: document.getElementById('ring20'),
+  viewport:     document.getElementById('photoViewport'),
+  proximityBox: document.getElementById('proximityBox'),
+  proximityVal: document.getElementById('proximityValue'),
+  calibBtn:     document.getElementById('calibrateBtn'),
+  calibHint:    document.getElementById('calibHint'),
+  layers: {
+    70: document.getElementById('layer70'),
+    50: document.getElementById('layer50'),
+    35: document.getElementById('layer35'),
+  },
 };
 
-function sizeRings() {
-  const green = document.getElementById('green');
-  const w = green.clientWidth;
-  const set = (el, pct) => {
-    el.style.width = (w * pct) + 'px';
-    el.style.height = (w * pct * 0.34) + 'px';
-  };
-  set(game.ring5, 0.10);
-  set(game.ring10, 0.20);
-  set(game.ring20, 0.38);
+// Hand-calibrated pin anchor coordinates for each base photo.
+// pinX/pinY are percentages of the photo viewport's width/height.
+// These were measured by clicking the base of the flagstick in each photo
+// with the slider at the photo's own base distance (scale=1, no zoom math).
+// Do NOT re-guess these — use Calibrate Pin mode if recalibration is needed.
+const PHOTOS = {
+  70: { pinX: 58, pinY: 49 },
+  50: { pinX: 58, pinY: 44 },
+  35: { pinX: 64, pinY: 52 },
+};
+
+// Which base photo covers which distance range
+function pickBucket(yards) {
+  if (yards >= 55) return 70;
+  if (yards >= 40) return 50;
+  return 35;
 }
-window.addEventListener('resize', sizeRings);
-sizeRings();
+
+// Update photo layer + zoom whenever the distance slider changes.
+// Scale is anchored to the pin position so zooming feels like walking toward it.
+function updatePhotoDisplay(yards) {
+  const bucket = pickBucket(yards);
+  const cfg    = PHOTOS[bucket];
+
+  // scale = bucket / yards: at the photo's own base distance scale=1.0 (full frame).
+  // Clamp ≥1.0 — shrinking below 1.0 reveals the black stage behind the layer.
+  const scale = Math.max(1.0, Math.min(bucket / yards, 1.55));
+
+  Object.entries(game.layers).forEach(([key, el]) => {
+    const active = Number(key) === bucket;
+    el.classList.toggle('active', active);
+    if (active) {
+      el.style.transformOrigin = `${cfg.pinX}% ${cfg.pinY}%`;
+      el.style.transform = `scale(${scale})`;
+    }
+  });
+
+  // Park ball marker at pin anchor so it starts there for the next shot
+  const vp = game.viewport.getBoundingClientRect();
+  const pinXpx = (cfg.pinX / 100) * vp.width;
+  const pinYpx = (cfg.pinY / 100) * vp.height;
+  game.ballMarker.style.left = pinXpx + 'px';
+  game.ballMarker.style.top  = pinYpx + 'px';
+
+  game.targetYards.textContent = yards + ' YD';
+}
+
+// Animate the ball to a grounded position on the photo relative to the pin.
+// distFeet: feet from pin (on green), or null for a missed-green shot.
+function animateBallTo(distFeet) {
+  const vp     = game.viewport.getBoundingClientRect();
+  const bucket = pickBucket(state.targetYards);
+  const cfg    = PHOTOS[bucket];
+  const pinXpx = (cfg.pinX / 100) * vp.width;
+  const pinYpx = (cfg.pinY / 100) * vp.height;
+
+  const maxOnGreenPx = 90;   // px radius for a shot right at the pin
+  const missPx       = 260;  // px offset for a missed-green shot (never confusable with near-miss)
+
+  let endX, endY;
+  if (distFeet === null) {
+    // Missed green: push clearly off the putting surface to one side
+    const side = Math.random() < 0.5 ? -1 : 1;
+    endX = pinXpx + side * (missPx + Math.random() * 60);
+    endY = pinYpx + (Math.random() * 40); // at or slightly below pin height
+  } else {
+    // On green: radius proportional to distance from pin.
+    // Vertical spread is tighter than horizontal and biased downward —
+    // a resting ball should never render above the flagstick's base.
+    const t      = Math.min(1, distFeet / 20);
+    const radius = t * maxOnGreenPx;
+    const angle  = Math.random() * Math.PI * 2;
+    endX = pinXpx + Math.cos(angle) * radius;
+    endY = pinYpx + Math.abs(Math.sin(angle)) * radius * 0.35;
+  }
+
+  game.ballMarker.style.opacity    = 1;
+  game.ballShadow.style.opacity    = 1;
+  game.ballMarker.style.transition = 'left .8s cubic-bezier(.22,.61,.36,1), top .8s cubic-bezier(.22,.61,.36,1), opacity .3s';
+  game.ballShadow.style.transition = 'left .8s cubic-bezier(.22,.61,.36,1), top .8s cubic-bezier(.22,.61,.36,1), opacity .3s';
+  requestAnimationFrame(() => {
+    game.ballMarker.style.left = endX + 'px';
+    game.ballMarker.style.top  = endY + 'px';
+    game.ballShadow.style.left = endX + 'px';
+    game.ballShadow.style.top  = (endY + 5) + 'px';
+  });
+}
+
+// Reset ball marker back to hidden (called on game reset)
+function hideBallMarker() {
+  game.ballMarker.style.opacity = 0;
+  game.ballShadow.style.opacity = 0;
+  game.proximityBox.classList.remove('show', 'miss');
+}
+
+// ---- Calibrate Pin mode ----
+// Toggle: click a point on the photo when scale=1 (slider at bucket's base distance)
+// and read back pinX/pinY percentages. Keeps calibration adjustable post-deploy.
+let calibrateMode = false;
+game.calibBtn.addEventListener('click', () => {
+  calibrateMode = !calibrateMode;
+  game.calibBtn.classList.toggle('active', calibrateMode);
+  game.calibHint.classList.toggle('show', calibrateMode);
+});
+
+game.viewport.addEventListener('click', (e) => {
+  if (!calibrateMode) return;
+  const vp  = game.viewport.getBoundingClientRect();
+  const px  = ((e.clientX - vp.left) / vp.width  * 100).toFixed(1);
+  const py  = ((e.clientY - vp.top)  / vp.height * 100).toFixed(1);
+  const bucket = pickBucket(state.targetYards);
+  console.log(`[golf-tracker] Calibrate Pin — bucket ${bucket}yd: pinX=${px}%, pinY=${py}%`);
+  alert(`Bucket ${bucket}yd pin: pinX=${px}%, pinY=${py}%\n\nUpdate PHOTOS[${bucket}] in the code if correct.`);
+});
 
 function renderLetters() {
   [game.p1letters, game.p2letters].forEach((container, pIdx) => {
@@ -2022,14 +2142,6 @@ function renderTurn() {
   game.p2box.classList.toggle('active', state.turn === 1);
 }
 
-function renderTarget() {
-  game.targetYards.textContent = state.targetYards + ' YD';
-}
-
-game.targetSelect.addEventListener('change', e => {
-  state.targetYards = parseInt(e.target.value, 10);
-  renderTarget();
-});
 
 /* Simulated shot stand-in — replaced by real tracker output in Gate #5.
    Integration point: call recordShot(distanceFeetOrNull) from the tracking pipeline. */
@@ -2040,58 +2152,32 @@ function simulateShot() {
   return Math.round(base * 10) / 10;
 }
 
-function animateBall(distanceFeet, cb) {
-  const green = document.getElementById('green');
-  const w = green.clientWidth, h = green.clientHeight;
-  const depthPct = Math.max(0.08, 1 - Math.min(distanceFeet, 25) / 25 * 0.85);
-  const lateral = (Math.random() - 0.5) * 0.5;
-  const startX = w / 2, startY = h;
-  const endX = w / 2 + lateral * w * 0.5;
-  const endY = h * 0.78 - (h * 0.78) * depthPct * 0 + h * (0.78 - 0.78 * depthPct);
-  const duration = 700;
-  const startTime = performance.now();
-  game.ball.style.opacity = 1;
-  game.ballShadow.style.opacity = 1;
-
-  function frame(now) {
-    const t = Math.min(1, (now - startTime) / duration);
-    const ease = 1 - Math.pow(1 - t, 2);
-    const x = startX + (endX - startX) * ease;
-    const y = startY + (endY - startY) * ease;
-    const arc = Math.sin(Math.PI * t) * -120;
-    const scale = 1 - 0.4 * ease;
-    game.ball.style.left = x + 'px';
-    game.ball.style.top = (y + arc) + 'px';
-    game.ball.style.transform = `translate(-50%,-50%) scale(${scale})`;
-    game.ballShadow.style.left = x + 'px';
-    game.ballShadow.style.top = y + 'px';
-    game.ballShadow.style.transform = `translate(-50%,0) scale(${1 - 0.3 * ease})`;
-    game.ballShadow.style.opacity = 0.35 * (1 - ease * 0.3);
-    if (t < 1) {
-      requestAnimationFrame(frame);
-    } else {
-      setTimeout(() => {
-        game.ball.style.opacity = 0;
-        game.ballShadow.style.opacity = 0;
-        cb && cb();
-      }, 500);
-    }
-  }
-  requestAnimationFrame(frame);
-}
-
 function recordShot(distanceFeetOrNull) {
   game.shotBtn.disabled = true;
-  const shooter = state.turn;
+  const shooter  = state.turn;
   const opponent = 1 - shooter;
 
-  animateBall(distanceFeetOrNull ?? 30, () => {
+  // Animate ball onto the photo green, then after 850ms resolve the game state
+  animateBallTo(distanceFeetOrNull);
+
+  setTimeout(() => {
+    // Show proximity box
+    game.proximityBox.classList.add('show');
+    if (distanceFeetOrNull === null) {
+      game.proximityBox.classList.add('miss');
+      game.proximityVal.innerHTML = 'Missed green';
+    } else {
+      game.proximityBox.classList.remove('miss');
+      game.proximityVal.innerHTML = `${distanceFeetOrNull}<span class="unit">ft</span>`;
+    }
+
+    // G-O-L-F game logic — unchanged from original
     if (state.standard === null) {
       if (distanceFeetOrNull === null) {
         game.result.innerHTML = `${state.players[shooter]} missed the green. Turn passes.`;
         state.turn = opponent;
       } else {
-        state.standard = distanceFeetOrNull;
+        state.standard    = distanceFeetOrNull;
         state.setterIndex = shooter;
         game.result.innerHTML = `${state.players[shooter]} sets the standard: <span class="big">${distanceFeetOrNull} ft</span> from the pin.`;
         state.turn = opponent;
@@ -2100,7 +2186,7 @@ function recordShot(distanceFeetOrNull) {
       const beat = distanceFeetOrNull !== null && distanceFeetOrNull < state.standard;
       if (beat) {
         game.result.innerHTML = `${state.players[shooter]} beats it — <span class="big">${distanceFeetOrNull} ft</span>. New standard set!`;
-        state.standard = distanceFeetOrNull;
+        state.standard    = distanceFeetOrNull;
         state.setterIndex = shooter;
         state.turn = opponent;
       } else {
@@ -2120,7 +2206,7 @@ function recordShot(distanceFeetOrNull) {
     }
     renderTurn();
     game.shotBtn.disabled = false;
-  });
+  }, 850);
 }
 
 function showWinner(name) {
@@ -2129,12 +2215,13 @@ function showWinner(name) {
 }
 
 function resetGame() {
-  state.turn = 0;
-  state.letters = [[], []];
-  state.standard = null;
+  state.turn        = 0;
+  state.letters     = [[], []];
+  state.standard    = null;
   state.setterIndex = 0;
   renderLetters();
   renderTurn();
+  hideBallMarker();
   game.result.textContent = "Player 1's turn — set the standard.";
   game.winnerBanner.classList.remove('show');
 }
@@ -2143,9 +2230,14 @@ game.shotBtn.addEventListener('click', () => recordShot(simulateShot()));
 game.resetBtn.addEventListener('click', resetGame);
 game.playAgainBtn.addEventListener('click', resetGame);
 
+game.targetSelect.addEventListener('change', e => {
+  state.targetYards = parseInt(e.target.value, 10);
+  updatePhotoDisplay(state.targetYards);
+});
+
 renderLetters();
 renderTurn();
-renderTarget();
+updatePhotoDisplay(state.targetYards);
 
 /* =====================================================================
    SERVICE WORKER REGISTRATION (PWA shell — Gate #1 foundation)

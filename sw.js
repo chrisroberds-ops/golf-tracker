@@ -11,7 +11,7 @@
   On the very first install, SHELL is fetched eagerly (install-time precache)
   so the app is immediately available offline after that first page load.
 */
-const CACHE_NAME = 'golf-tracker-v19';
+const CACHE_NAME = 'golf-tracker-v20';
 
 const SHELL = [
   '/',
@@ -21,6 +21,9 @@ const SHELL = [
   '/icon-192.png',
   '/icon-512.png',
   '/vendor/opencv.js',
+  '/images/green-70.jpg',
+  '/images/green-50.jpg',
+  '/images/green-35.jpg',
   '/fonts/fonts.css',
   '/fonts/anton-400-latin-ext.woff2',
   '/fonts/anton-400-latin.woff2',
