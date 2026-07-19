@@ -412,7 +412,9 @@ var Module = {
     position:absolute; z-index:5; pointer-events:none;
     width:16px; height:6px; border-radius:50%;
     background:rgba(0,0,0,0.4); filter:blur(1.5px);
-    opacity:0; transform:translate(-50%,-50%);
+    opacity:0;
+    /* Shadow is centred horizontally, pushed down 4px so it sits below the ball */
+    transform:translate(-50%, 4px);
   }
   .ball-marker{
     position:absolute; z-index:6; pointer-events:none;
@@ -454,24 +456,25 @@ var Module = {
   }
   .game-btn.ghost:hover{ color:var(--chalk); border-color:var(--chalk-dim); }
 
-  /* ---- target select + calibrate pin (overlay controls top-right) ---- */
-  .controls-row{
-    position:absolute; top:10px; right:14px;
-    display:flex; gap:8px; z-index:8;
+  /* ---- distance slider row (in footer) ---- */
+  .slider-row{
+    display:flex; align-items:center; gap:10px; width:100%;
   }
-  .target-select{
-    background:rgba(255,255,255,0.06);
-    color:var(--chalk); border:1px solid rgba(241,240,232,0.25);
-    border-radius:6px; font-family:'Manrope',sans-serif; font-size:12px;
-    padding:5px 7px;
+  .slider-endcap{
+    font-size:12px; color:var(--chalk-dim); width:30px; text-align:center; flex-shrink:0;
   }
+  .slider-row input[type=range]{
+    flex:1; accent-color:var(--flag-red);
+  }
+
   .calib-btn{
-    appearance:none; border:1px solid rgba(241,240,232,0.2); cursor:pointer;
-    background:rgba(13,31,23,0.7); backdrop-filter:blur(3px);
+    appearance:none; border:1.5px solid rgba(241,240,232,0.25); cursor:pointer;
+    background:transparent;
     color:var(--chalk-dim); font-family:'Manrope',sans-serif;
-    font-size:11px; font-weight:700; letter-spacing:.06em;
-    padding:5px 9px; border-radius:6px;
+    font-size:13px; font-weight:700; letter-spacing:.04em;
+    padding:11px 20px; border-radius:8px;
     transition:color .15s, border-color .15s;
+    white-space:nowrap;
   }
   .calib-btn:hover{ color:var(--chalk); border-color:var(--chalk-dim); }
   .calib-btn.active{ color:var(--sand); border-color:var(--sand); }
@@ -679,23 +682,18 @@ var Module = {
     </div>
   </div>
 
-  <!-- Target select + Calibrate Pin in top-right of viewport -->
-  <div class="controls-row">
-    <select class="target-select" id="targetSelect">
-      <option value="20">20 yd</option>
-      <option value="30">30 yd</option>
-      <option value="40" selected>40 yd</option>
-      <option value="50">50 yd</option>
-      <option value="60">60 yd</option>
-      <option value="70">70 yd</option>
-    </select>
-    <button class="calib-btn" id="calibrateBtn">Calibrate Pin</button>
-  </div>
-
   <div class="footer">
-    <button class="game-btn ghost" id="resetBtn">Reset Game</button>
-    <div class="result" id="result">Player 1's turn — set the standard.</div>
-    <button class="game-btn" id="shotBtn">Simulate Shot ⛳</button>
+    <div class="slider-row">
+      <span class="slider-endcap">20</span>
+      <input type="range" id="targetSlider" min="20" max="70" value="40" step="5">
+      <span class="slider-endcap">70</span>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap;">
+      <button class="game-btn ghost" id="resetBtn">Reset Game</button>
+      <div class="result" id="result">Player 1's turn — set the standard.</div>
+      <button class="game-btn" id="shotBtn">Simulate Shot ⛳</button>
+      <button class="calib-btn" id="calibrateBtn">Calibrate Pin</button>
+    </div>
   </div>
 
 </div>
@@ -1993,7 +1991,7 @@ const game = {
   ballShadow:   document.getElementById('ballShadow'),
   shotBtn:      document.getElementById('shotBtn'),
   resetBtn:     document.getElementById('resetBtn'),
-  targetSelect: document.getElementById('targetSelect'),
+  targetSlider: document.getElementById('targetSlider'),
   targetYards:  document.getElementById('targetYards'),
   winnerBanner: document.getElementById('winnerBanner'),
   winnerText:   document.getElementById('winnerText'),
@@ -2047,13 +2045,6 @@ function updatePhotoDisplay(yards) {
     }
   });
 
-  // Park ball marker at pin anchor so it starts there for the next shot
-  const vp = game.viewport.getBoundingClientRect();
-  const pinXpx = (cfg.pinX / 100) * vp.width;
-  const pinYpx = (cfg.pinY / 100) * vp.height;
-  game.ballMarker.style.left = pinXpx + 'px';
-  game.ballMarker.style.top  = pinYpx + 'px';
-
   game.targetYards.textContent = yards + ' YD';
 }
 
@@ -2093,8 +2084,10 @@ function animateBallTo(distFeet) {
   requestAnimationFrame(() => {
     game.ballMarker.style.left = endX + 'px';
     game.ballMarker.style.top  = endY + 'px';
+    // Shadow shares the same anchor point — CSS transform:translate(-50%,4px)
+    // pushes it 4px below the ball's centre, providing the grounding cue.
     game.ballShadow.style.left = endX + 'px';
-    game.ballShadow.style.top  = (endY + 5) + 'px';
+    game.ballShadow.style.top  = endY + 'px';
   });
 }
 
@@ -2125,8 +2118,14 @@ game.viewport.addEventListener('click', (e) => {
   // the visible photo area and isn't including extra chrome above/below.
   console.log(`[golf-tracker] Calibrate Pin — viewport rect: top=${vp.top.toFixed(1)} left=${vp.left.toFixed(1)} w=${vp.width.toFixed(1)} h=${vp.height.toFixed(1)}`);
   console.log(`[golf-tracker] Calibrate Pin — click: clientX=${e.clientX.toFixed(1)} clientY=${e.clientY.toFixed(1)} → pinX=${px}% pinY=${py}% (bucket ${bucket}yd)`);
-  // Show result on-screen in the result line — no blocking popup.
-  game.result.innerHTML = `Pin calibration (${bucket}yd): <span class="big">pinX=${px}% pinY=${py}%</span> — update PHOTOS[${bucket}] if correct`;
+
+  // Write back to PHOTOS immediately so animateBallTo() and updatePhotoDisplay()
+  // both use the live-calibrated values without requiring a code change + redeploy.
+  PHOTOS[bucket].pinX = parseFloat(px);
+  PHOTOS[bucket].pinY = parseFloat(py);
+  updatePhotoDisplay(state.targetYards); // refresh zoom anchor to match new pin position
+
+  game.result.innerHTML = `Pin calibrated (${bucket}yd): <span class="big">pinX=${px}% pinY=${py}%</span> — applied live`;
 });
 
 function renderLetters() {
@@ -2234,7 +2233,7 @@ game.shotBtn.addEventListener('click', () => recordShot(simulateShot()));
 game.resetBtn.addEventListener('click', resetGame);
 game.playAgainBtn.addEventListener('click', resetGame);
 
-game.targetSelect.addEventListener('change', e => {
+game.targetSlider.addEventListener('input', e => {
   state.targetYards = parseInt(e.target.value, 10);
   updatePhotoDisplay(state.targetYards);
 });
