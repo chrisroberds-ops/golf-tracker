@@ -16,18 +16,35 @@
   OpenCV.js — served locally from vendor/ for offline operation.
   The Module global must be defined before opencv.js loads so the WASM
   runtime picks up the onRuntimeInitialized callback.
+
+  In Display view (?view=display) we skip this entirely — no camera access,
+  no WASM load, no 9.6MB transfer.
 -->
 <script>
-var Module = {
-  onRuntimeInitialized: function() {
-    window.opencvReady = true;
-    const el = document.getElementById('opencvStatus');
-    if (el) { el.textContent = 'OpenCV ready'; el.className = 'cv-badge ok'; }
-    console.log('[golf-tracker] OpenCV.js runtime initialized');
-  }
-};
+// Resolve view mode before any other script runs.
+// IS_DISPLAY is checked throughout to gate camera/OpenCV code.
+window.IS_DISPLAY = new URLSearchParams(location.search).get('view') === 'display';
+
+if (!window.IS_DISPLAY) {
+  window.Module = {
+    onRuntimeInitialized: function() {
+      window.opencvReady = true;
+      const el = document.getElementById('opencvStatus');
+      if (el) { el.textContent = 'OpenCV ready'; el.className = 'cv-badge ok'; }
+      console.log('[golf-tracker] OpenCV.js runtime initialized');
+    }
+  };
+}
 </script>
-<script async src="vendor/opencv.js"></script>
+<script>
+// Load OpenCV only in Capture mode — Display tab must never trigger this.
+if (!window.IS_DISPLAY) {
+  const s = document.createElement('script');
+  s.async = true;
+  s.src = 'vendor/opencv.js';
+  document.head.appendChild(s);
+}
+</script>
 
 <style>
   /* ---- design tokens (shared across both views) ---- */
@@ -500,8 +517,8 @@ var Module = {
 </head>
 <body>
 
-<!-- ======== TOP NAV ======== -->
-<nav class="top-nav">
+<!-- ======== TOP NAV (hidden in Display view) ======== -->
+<nav class="top-nav" id="topNav">
   <h1 class="app-title">Golf Tracker</h1>
   <div class="nav-tabs">
     <button class="nav-tab active" id="tabCalib" onclick="switchView('calib')">Calibration</button>
@@ -725,8 +742,66 @@ function switchView(view) {
 }
 
 /* =====================================================================
-   CALIBRATION — lifted verbatim from calibration_prototype.html
+   BROADCASTCHANNEL — shared between Capture and Display tabs
+   Same-origin, same-browser: zero server, zero network round-trip.
+   Capture broadcasts on every recordShot(), resetGame(), and slider change.
+   Display receives and drives its local game state from the messages.
+
+   Message schema:
+     { type: 'shot',   distanceFeet: number|null }
+     { type: 'target', yards: number }
+     { type: 'reset' }
    ===================================================================== */
+const shotChannel = ('BroadcastChannel' in window)
+  ? new BroadcastChannel('golf-tracker-shots')
+  : null; // graceful no-op on browsers without support
+
+if (shotChannel) {
+  shotChannel.onmessage = (event) => {
+    const msg = event.data;
+    if (!msg || !msg.type) return;
+    if (msg.type === 'shot') {
+      // Drive ball placement + game state from Capture's shot result
+      recordShot(msg.distanceFeet);
+    } else if (msg.type === 'target') {
+      state.targetYards = msg.yards;
+      if (game.targetSlider) game.targetSlider.value = msg.yards;
+      updatePhotoDisplay(msg.yards);
+    } else if (msg.type === 'reset') {
+      resetGame();
+    }
+  };
+}
+
+/* =====================================================================
+   DISPLAY MODE BOOTSTRAP
+   ?view=display: show only the game view, hide nav + calibration view,
+   and never request camera or load OpenCV.
+   ===================================================================== */
+if (window.IS_DISPLAY) {
+  // Hide top nav and calibration view — Display tab is the green only
+  document.getElementById('topNav').style.display    = 'none';
+  document.getElementById('calibView').style.display = 'none';
+
+  // Activate game view immediately (no tab-switch needed)
+  const gv = document.getElementById('gameView');
+  gv.classList.add('active');
+  gv.style.height = '100vh'; // full viewport — no nav taking space
+
+  // Hide the footer controls that only make sense on the Capture side
+  // (slider, Simulate Shot, Reset, Calibrate Pin) — Display is read-only,
+  // driven entirely by BroadcastChannel messages from the Capture tab.
+  const footer = gv.querySelector('.footer');
+  if (footer) footer.style.display = 'none';
+
+  console.log('[golf-tracker] Display mode — camera/OpenCV suppressed, listening on BroadcastChannel');
+}
+
+/* =====================================================================
+   CALIBRATION — only runs in Capture mode
+   ===================================================================== */
+if (!window.IS_DISPLAY) {
+
 const cam = {
   deviceSelect: document.getElementById('deviceSelect'),
   video: document.getElementById('calibVideo'),
@@ -1967,6 +2042,8 @@ cam.detectToggle.addEventListener('click', () => {
   }
 })();
 
+} // end !IS_DISPLAY — camera, OpenCV, and detection code above is Capture-only
+
 /* =====================================================================
    GAME — photo-based green display
    ===================================================================== */
@@ -2160,6 +2237,11 @@ function recordShot(distanceFeetOrNull) {
   const shooter  = state.turn;
   const opponent = 1 - shooter;
 
+  // Broadcast to Display tab — only from Capture to avoid feedback loop
+  if (!window.IS_DISPLAY && shotChannel) {
+    shotChannel.postMessage({ type: 'shot', distanceFeet: distanceFeetOrNull, timestamp: Date.now() });
+  }
+
   // Animate ball onto the photo green, then after 850ms resolve the game state
   animateBallTo(distanceFeetOrNull);
 
@@ -2227,6 +2309,9 @@ function resetGame() {
   hideBallMarker();
   game.result.textContent = "Player 1's turn — set the standard.";
   game.winnerBanner.classList.remove('show');
+  if (!window.IS_DISPLAY && shotChannel) {
+    shotChannel.postMessage({ type: 'reset', timestamp: Date.now() });
+  }
 }
 
 game.shotBtn.addEventListener('click', () => recordShot(simulateShot()));
@@ -2236,6 +2321,9 @@ game.playAgainBtn.addEventListener('click', resetGame);
 game.targetSlider.addEventListener('input', e => {
   state.targetYards = parseInt(e.target.value, 10);
   updatePhotoDisplay(state.targetYards);
+  if (!window.IS_DISPLAY && shotChannel) {
+    shotChannel.postMessage({ type: 'target', yards: state.targetYards });
+  }
 });
 
 renderLetters();
