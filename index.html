@@ -2227,13 +2227,33 @@ function computePlacement(distFeet) {
   return { pctX, pctY };
 }
 
-// Render the ball marker at the given viewport-percentage coordinates.
-// Pure render — no randomization. Called by both Capture (after computePlacement)
-// and Display (with coordinates received from Capture via BroadcastChannel).
+// Render the ball marker at the given photo-content percentage coordinates.
+//
+// pctX/pctY are positions in unscaled photo space (% of viewport at scale=1).
+// The active photo layer is CSS-transformed — scale(s) anchored at the pin —
+// but the ball marker is a sibling of that layer, not inside it, so the
+// browser's transform does NOT move the marker automatically.
+//
+// We apply the same transform manually before converting to pixels:
+//   screen = pin + (content − pin) × scale
+//
+// At scale=1 (base distances) this is a no-op. At any other distance the
+// correction grows proportionally, keeping the marker visually coincident
+// with the corresponding point on the zoomed photo.
+// Both Capture and Display compute scale from the same state.targetYards,
+// so the correction is consistent across both views.
 function placeBallAt(pctX, pctY) {
-  const vp   = game.viewport.getBoundingClientRect();
-  const endX = (pctX / 100) * vp.width;
-  const endY = (pctY / 100) * vp.height;
+  const vp     = game.viewport.getBoundingClientRect();
+  const bucket = pickBucket(state.targetYards);
+  const cfg    = PHOTOS[bucket];
+  const scale  = Math.max(1.0, Math.min(bucket / state.targetYards, 1.55));
+
+  // Apply the photo layer's CSS transform to find the true screen position.
+  const screenPctX = cfg.pinX + (pctX - cfg.pinX) * scale;
+  const screenPctY = cfg.pinY + (pctY - cfg.pinY) * scale;
+
+  const endX = (screenPctX / 100) * vp.width;
+  const endY = (screenPctY / 100) * vp.height;
 
   game.ballMarker.style.opacity    = 1;
   game.ballShadow.style.opacity    = 1;
