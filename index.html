@@ -2161,40 +2161,51 @@ function updatePhotoDisplay(yards) {
 
 // Animate the ball to a grounded position on the photo relative to the pin.
 // distFeet: feet from pin (on green), or null for a missed-green shot.
-// Compute a random landing position and return it as viewport-percentage
-// coordinates. Randomization happens ONCE here (Capture side only) —
-// the result is broadcast so Display can call placeBallAt() with the
-// identical coordinates rather than re-rolling its own random values.
-// Using percentages (not raw pixels) lets Display scale correctly for
-// whatever screen size it's on.
+// Compute a random landing position entirely in percentage space.
+//
+// Why percentages throughout (not pixels-then-converted):
+//   The pin coords (pinX/pinY) are stored as % of viewport width/height and
+//   work correctly on any screen because they're never round-tripped through
+//   one specific viewport's pixel dimensions. The ball offset must follow the
+//   same principle — if we computed the radius in Capture's pixels and then
+//   converted, Display would scale that percentage against its own (different)
+//   viewport size and get a different visual offset from the pin.
+//   Working in % from the start means the broadcast value is the same relative
+//   position on the photo regardless of which viewport renders it.
+//
+// Randomization happens ONCE here (Capture side only). The result is broadcast
+// so Display calls placeBallAt() with the identical coordinates.
 function computePlacement(distFeet) {
-  const vp     = game.viewport.getBoundingClientRect();
   const bucket = pickBucket(state.targetYards);
   const cfg    = PHOTOS[bucket];
-  const pinXpx = (cfg.pinX / 100) * vp.width;
-  const pinYpx = (cfg.pinY / 100) * vp.height;
+  const pinX   = cfg.pinX;  // % of viewport width  (same coordinate system as endX)
+  const pinY   = cfg.pinY;  // % of viewport height (same coordinate system as endY)
 
-  const maxOnGreenPx = 90;   // px radius for a shot right at the pin
-  const missPx       = 260;  // px offset for a missed-green shot
+  // Radius expressed as % of viewport width. 22% ≈ 90px on a ~410px viewport —
+  // the same visual spread, but now viewport-independent.
+  const maxOnGreenPct = 22;
+  // Miss offset: clearly off the green edge. 65% of width pushes the marker
+  // well outside the photo boundary on any screen size.
+  const missPct = 65;
 
-  let endX, endY;
+  let pctX, pctY;
   if (distFeet === null) {
     // Missed green: push clearly off the putting surface to one side
     const side = Math.random() < 0.5 ? -1 : 1;
-    endX = pinXpx + side * (missPx + Math.random() * 60);
-    endY = pinYpx + (Math.random() * 40); // at or slightly below pin height
+    pctX = pinX + side * (missPct + Math.random() * 15); // % of width
+    pctY = pinY + Math.random() * 13;                    // % of height
   } else {
     // On green: radius proportional to distance from pin.
-    // Vertical spread tighter than horizontal, biased downward so the
-    // ball never renders above the flagstick's base.
-    const t      = Math.min(1, distFeet / 20);
-    const radius = t * maxOnGreenPx;
-    const angle  = Math.random() * Math.PI * 2;
-    endX = pinXpx + Math.cos(angle) * radius;
-    endY = pinYpx + Math.abs(Math.sin(angle)) * radius * 0.35;
+    // 0.35 vertical squish — tighter spread on Y so the ball never renders
+    // above the flagstick's base (the green recedes away from camera).
+    const t     = Math.min(1, distFeet / 20);
+    const r     = t * maxOnGreenPct;                     // % of width
+    const angle = Math.random() * Math.PI * 2;
+    pctX = pinX + Math.cos(angle) * r;
+    pctY = pinY + Math.abs(Math.sin(angle)) * r * 0.35; // % of height
   }
 
-  return { pctX: (endX / vp.width) * 100, pctY: (endY / vp.height) * 100 };
+  return { pctX, pctY };
 }
 
 // Render the ball marker at the given viewport-percentage coordinates.
