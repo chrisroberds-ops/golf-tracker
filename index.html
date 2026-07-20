@@ -761,8 +761,8 @@ if (shotChannel) {
     const msg = event.data;
     if (!msg || !msg.type) return;
     if (msg.type === 'shot') {
-      // Drive ball placement + game state from Capture's shot result
-      recordShot(msg.distanceFeet);
+      // Use the exact placement Capture computed — no re-randomizing
+      recordShot(msg.distanceFeet, { pctX: msg.ballPctX, pctY: msg.ballPctY });
     } else if (msg.type === 'target') {
       state.targetYards = msg.yards;
       if (game.targetSlider) game.targetSlider.value = msg.yards;
@@ -2161,7 +2161,13 @@ function updatePhotoDisplay(yards) {
 
 // Animate the ball to a grounded position on the photo relative to the pin.
 // distFeet: feet from pin (on green), or null for a missed-green shot.
-function animateBallTo(distFeet) {
+// Compute a random landing position and return it as viewport-percentage
+// coordinates. Randomization happens ONCE here (Capture side only) —
+// the result is broadcast so Display can call placeBallAt() with the
+// identical coordinates rather than re-rolling its own random values.
+// Using percentages (not raw pixels) lets Display scale correctly for
+// whatever screen size it's on.
+function computePlacement(distFeet) {
   const vp     = game.viewport.getBoundingClientRect();
   const bucket = pickBucket(state.targetYards);
   const cfg    = PHOTOS[bucket];
@@ -2169,7 +2175,7 @@ function animateBallTo(distFeet) {
   const pinYpx = (cfg.pinY / 100) * vp.height;
 
   const maxOnGreenPx = 90;   // px radius for a shot right at the pin
-  const missPx       = 260;  // px offset for a missed-green shot (never confusable with near-miss)
+  const missPx       = 260;  // px offset for a missed-green shot
 
   let endX, endY;
   if (distFeet === null) {
@@ -2179,14 +2185,25 @@ function animateBallTo(distFeet) {
     endY = pinYpx + (Math.random() * 40); // at or slightly below pin height
   } else {
     // On green: radius proportional to distance from pin.
-    // Vertical spread is tighter than horizontal and biased downward —
-    // a resting ball should never render above the flagstick's base.
+    // Vertical spread tighter than horizontal, biased downward so the
+    // ball never renders above the flagstick's base.
     const t      = Math.min(1, distFeet / 20);
     const radius = t * maxOnGreenPx;
     const angle  = Math.random() * Math.PI * 2;
     endX = pinXpx + Math.cos(angle) * radius;
     endY = pinYpx + Math.abs(Math.sin(angle)) * radius * 0.35;
   }
+
+  return { pctX: (endX / vp.width) * 100, pctY: (endY / vp.height) * 100 };
+}
+
+// Render the ball marker at the given viewport-percentage coordinates.
+// Pure render — no randomization. Called by both Capture (after computePlacement)
+// and Display (with coordinates received from Capture via BroadcastChannel).
+function placeBallAt(pctX, pctY) {
+  const vp   = game.viewport.getBoundingClientRect();
+  const endX = (pctX / 100) * vp.width;
+  const endY = (pctY / 100) * vp.height;
 
   game.ballMarker.style.opacity    = 1;
   game.ballShadow.style.opacity    = 1;
@@ -2195,11 +2212,19 @@ function animateBallTo(distFeet) {
   requestAnimationFrame(() => {
     game.ballMarker.style.left = endX + 'px';
     game.ballMarker.style.top  = endY + 'px';
-    // Shadow shares the same anchor point — CSS transform:translate(-50%,4px)
-    // pushes it 4px below the ball's centre, providing the grounding cue.
+    // Shadow shares the same anchor — CSS transform:translate(-50%,4px)
+    // pushes it 4px below centre for the grounding cue.
     game.ballShadow.style.left = endX + 'px';
     game.ballShadow.style.top  = endY + 'px';
   });
+}
+
+// Convenience wrapper used by Capture: compute placement + render locally.
+// Returns {pctX, pctY} so callers can broadcast it.
+function animateBallTo(distFeet) {
+  const pos = computePlacement(distFeet);
+  placeBallAt(pos.pctX, pos.pctY);
+  return pos;
 }
 
 // Reset ball marker back to hidden (called on game reset)
@@ -2266,18 +2291,30 @@ function simulateShot() {
   return Math.round(base * 10) / 10;
 }
 
-function recordShot(distanceFeetOrNull) {
+// ballPos is {pctX, pctY} when called from BroadcastChannel (Display side) —
+// the pre-computed placement from Capture so both views show the identical spot.
+// When undefined (Capture side), a new random placement is computed and broadcast.
+function recordShot(distanceFeetOrNull, ballPos) {
   game.shotBtn.disabled = true;
   const shooter  = state.turn;
   const opponent = 1 - shooter;
 
-  // Broadcast to Display tab — only from Capture to avoid feedback loop
-  if (!window.IS_DISPLAY && shotChannel) {
-    shotChannel.postMessage({ type: 'shot', distanceFeet: distanceFeetOrNull, timestamp: Date.now() });
+  // Place the ball: use provided coordinates (Display path) or compute new
+  // random placement (Capture path) and broadcast the result.
+  if (ballPos) {
+    placeBallAt(ballPos.pctX, ballPos.pctY);
+  } else {
+    const pos = animateBallTo(distanceFeetOrNull);
+    if (!window.IS_DISPLAY && shotChannel) {
+      shotChannel.postMessage({
+        type:         'shot',
+        distanceFeet: distanceFeetOrNull,
+        ballPctX:     pos.pctX,
+        ballPctY:     pos.pctY,
+        timestamp:    Date.now(),
+      });
+    }
   }
-
-  // Animate ball onto the photo green, then after 850ms resolve the game state
-  animateBallTo(distanceFeetOrNull);
 
   setTimeout(() => {
     // Show proximity box
