@@ -769,6 +769,40 @@ if (shotChannel) {
       updatePhotoDisplay(msg.yards);
     } else if (msg.type === 'reset') {
       resetGame();
+    } else if (msg.type === 'requestState') {
+      // Other tab just loaded and is asking for current state.
+      // BroadcastChannel never delivers to the sender, so only we see this.
+      // Respond with a full snapshot so the other tab can sync immediately.
+      shotChannel.postMessage({
+        type:        'stateSnapshot',
+        targetYards: state.targetYards,
+        turn:        state.turn,
+        letters:     state.letters,
+        standard:    state.standard,
+        setterIndex: state.setterIndex,
+        players:     state.players,
+      });
+    } else if (msg.type === 'stateSnapshot') {
+      // Apply full state from the other tab.
+      state.targetYards  = msg.targetYards;
+      state.turn         = msg.turn;
+      state.letters      = msg.letters;
+      state.standard     = msg.standard;
+      state.setterIndex  = msg.setterIndex;
+      if (msg.players) state.players = msg.players;
+      if (game.targetSlider) game.targetSlider.value = msg.targetYards;
+      updatePhotoDisplay(msg.targetYards);
+      renderLetters();
+      renderTurn();
+      // Restore status text to match the active game state
+      if (msg.standard !== null) {
+        game.result.innerHTML = `Standard: <span class="big">${msg.standard} ft</span> (set by ${state.players[msg.setterIndex]}).`;
+      } else {
+        game.result.textContent = `${state.players[msg.turn]}'s turn — set the standard.`;
+      }
+      // Re-show winner banner if the game was already won when we loaded
+      const winnerIdx = msg.letters.findIndex(l => l.length >= LETTERS.length);
+      if (winnerIdx !== -1) showWinner(state.players[1 - winnerIdx]);
     }
   };
 }
@@ -2329,6 +2363,15 @@ game.targetSlider.addEventListener('input', e => {
 renderLetters();
 renderTurn();
 updatePhotoDisplay(state.targetYards);
+
+// Ask the other tab for its current state. Fires from both Capture and Display
+// on load — whichever tab is already open responds with 'stateSnapshot'.
+// BroadcastChannel never echoes to the sender, so only the peer receives this.
+// If neither tab is open yet (both loading simultaneously) the responses carry
+// the same default initial state, which is harmless.
+if (shotChannel) {
+  shotChannel.postMessage({ type: 'requestState' });
+}
 
 /* =====================================================================
    SERVICE WORKER REGISTRATION (PWA shell — Gate #1 foundation)
