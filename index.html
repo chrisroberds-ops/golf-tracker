@@ -385,9 +385,26 @@ if (!window.IS_DISPLAY) {
     font-family:'Anton',sans-serif; font-size:26px; color:var(--sand); line-height:1;
   }
 
-  /* ---- photo viewport ---- */
+  /* ---- photo stage + viewport ---- */
+  /*
+   * .photo-stage fills remaining vertical space in the column layout and
+   * letterboxes the viewport inside it (turf-deep colour on whichever axis
+   * doesn't match).  .photo-viewport is locked to the source photos' exact
+   * aspect ratio (1600×872) so background-size:cover always crops at the
+   * same point, regardless of how much footer/scoreboard chrome surrounds it
+   * in Capture vs Display.  min-height:0 is required on .photo-stage so
+   * flex shrink works correctly when the stage is itself a flex child.
+   */
+  .photo-stage{
+    flex:1; min-height:0;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--turf-deep); overflow:hidden;
+  }
   .photo-viewport{
-    position:relative; flex:1; overflow:hidden; background:#000;
+    position:relative;
+    aspect-ratio:1600/872;
+    width:100%; max-height:100%;
+    overflow:hidden; background:#000;
   }
   .photo-layer{
     position:absolute; inset:0;
@@ -676,7 +693,8 @@ if (!window.IS_DISPLAY) {
     </div>
   </div>
 
-  <!-- Photo viewport — fills remaining height between scoreboard and footer -->
+  <!-- Photo stage letterboxes the fixed-ratio viewport in available space -->
+  <div class="photo-stage">
   <div class="photo-viewport" id="photoViewport">
     <div class="photo-layer" id="layer70" style="background-image:url('images/green-70.jpg')"></div>
     <div class="photo-layer" id="layer50" style="background-image:url('images/green-50.jpg')"></div>
@@ -698,6 +716,7 @@ if (!window.IS_DISPLAY) {
       Calibration mode: set target to this photo's base distance (35/50/70 yd exactly), then click the flag's base in the photo.
     </div>
   </div>
+  </div><!-- /.photo-stage -->
 
   <div class="footer">
     <div class="slider-row">
