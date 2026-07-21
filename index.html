@@ -520,6 +520,15 @@ if (!window.IS_DISPLAY) {
   }
   .calib-hint.show{ display:block; }
 
+  /* ---- viewport debug overlay — remove by adding ?nodebug to URL ---- */
+  .vp-debug{
+    position:absolute; bottom:6px; right:8px; z-index:20;
+    font-family:'Manrope',monospace; font-size:10px; font-weight:600;
+    color:rgba(255,220,100,0.9); background:rgba(0,0,0,0.55);
+    padding:2px 6px; border-radius:4px; pointer-events:none;
+    letter-spacing:.03em;
+  }
+
   /* ---- winner overlay ---- */
   .winner-banner{
     position:fixed; inset:0; background:rgba(8,19,13,0.92);
@@ -710,6 +719,9 @@ if (!window.IS_DISPLAY) {
     <!-- Ball marker + grounding shadow — positioned in JS via left/top px -->
     <div class="ball-shadow" id="ballShadow"></div>
     <div class="ball-marker" id="ballMarker"></div>
+
+    <!-- Viewport debug overlay — hidden with ?nodebug — remove when no longer needed -->
+    <div class="vp-debug" id="vpDebug"></div>
 
     <!-- Calibrate-pin hint (shown when calibration mode is active) -->
     <div class="calib-hint" id="calibHint">
@@ -2131,12 +2143,26 @@ const game = {
   proximityVal: document.getElementById('proximityValue'),
   calibBtn:     document.getElementById('calibrateBtn'),
   calibHint:    document.getElementById('calibHint'),
+  vpDebug:      document.getElementById('vpDebug'),
   layers: {
     70: document.getElementById('layer70'),
     50: document.getElementById('layer50'),
     35: document.getElementById('layer35'),
   },
 };
+
+// Viewport debug overlay — set to false (or add ?nodebug) to hide.
+// Flip this constant off once the Capture/Display box-size parity is confirmed.
+const VP_DEBUG = !new URLSearchParams(location.search).has('nodebug');
+if (!VP_DEBUG) game.vpDebug.style.display = 'none';
+
+function updateVpDebug() {
+  if (!VP_DEBUG) return;
+  const r = game.viewport.getBoundingClientRect();
+  const view = window.IS_DISPLAY ? 'D' : 'C';
+  game.vpDebug.textContent =
+    `${view} ${r.width.toFixed(0)}×${r.height.toFixed(0)} (${(r.width/r.height).toFixed(2)})`;
+}
 
 // Hand-calibrated pin anchor coordinates for each base photo.
 // pinX/pinY are percentages of the photo viewport's width/height.
@@ -2176,6 +2202,7 @@ function updatePhotoDisplay(yards) {
   });
 
   game.targetYards.textContent = yards + ' YD';
+  requestAnimationFrame(updateVpDebug);
 }
 
 // Animate the ball to a grounded position on the photo relative to the pin.
@@ -2450,6 +2477,7 @@ game.targetSlider.addEventListener('input', e => {
 renderLetters();
 renderTurn();
 updatePhotoDisplay(state.targetYards);
+window.addEventListener('resize', () => requestAnimationFrame(updateVpDebug));
 
 // Ask the other tab for its current state. Fires from both Capture and Display
 // on load — whichever tab is already open responds with 'stateSnapshot'.
