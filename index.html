@@ -994,10 +994,10 @@ function linReg(ys, ts) {
  *                   NOTE: because image-y is inverted, a ball moving up in frame
  *                   has negative vy from regression — we negate before atan2
  *   speedPxPerSec — magnitude of velocity vector in px/s
- *   r2x, r2y      — goodness-of-fit for each axis (diagnostic, not used for gating)
+ *   r2x, r2y      — goodness-of-fit for each axis; used by the r² noise gate in the n≥3 branch
  *   frameCount    — how many valid samples went into the fit
  *
- * Brief constraint: discard shots with fewer than 4 valid frames rather than
+ * Brief constraint: discard shots with fewer than MIN_FRAMES (2) valid frames rather than
  * reporting a number from too little data. Tuned for 30fps / 4-5 usable frames
  * minimum, not 8+.
  */
@@ -1051,7 +1051,10 @@ function fitShot(samples) {
     // Exception: flat-axis case — if total range is tiny, r² is undefined/unstable
     // (a perfectly flat shot naturally produces r²≈0 when cy varies only 1px).
     const MIN_R2       = 0.85;
-    const FLAT_AXIS_PX = 5; // px at 200×150; skip r² check when axis has <5px range
+    const FLAT_AXIS_PX = 3; // px at 200×150; skip r² check when axis has <3px range
+    // NOTE: keep this well below the post-stall-trim y-range of a near-horizontal shot.
+    // The stall trimmer removes tail frames before fitShot runs, which can shrink yRange
+    // below the threshold and falsely trigger this exemption for genuinely noisy y.
 
     const xRange = Math.max(...xs) - Math.min(...xs);
     const yRange = Math.max(...ys) - Math.min(...ys);
@@ -1544,6 +1547,11 @@ async function startCamera(deviceId) {
   cam.statusDot.className = 'dot';
   cam.errorBox.classList.remove('show');
 
+  // Log BEFORE getUserMedia so we can confirm the correct deviceId is being
+  // requested — if this shows the right ID but the stream opens the wrong
+  // camera, the bug is in the browser/driver, not our code.
+  console.log('[golf-tracker] startCamera requesting deviceId:', deviceId || '(none — any camera)');
+
   const constraints = {
     video: {
       deviceId: deviceId ? { exact: deviceId } : undefined,
@@ -1553,6 +1561,7 @@ async function startCamera(deviceId) {
     },
     audio: false
   };
+  console.log('[golf-tracker] getUserMedia constraints:', JSON.stringify(constraints.video));
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -1562,8 +1571,11 @@ async function startCamera(deviceId) {
 
     const track = stream.getVideoTracks()[0];
     const settings = track.getSettings ? track.getSettings() : {};
-    // Log and display the *actual* negotiated values — constraint #1 in the brief
+    // Log negotiated values. Note: settings.deviceId is often an opaque
+    // browser-internal ID that does NOT match the enumeration deviceId —
+    // use track.label to confirm the correct physical camera was opened.
     console.log('[golf-tracker] negotiated camera settings:', settings);
+    console.log('[golf-tracker] track label (physical camera name):', track.label);
     cam.statusDot.className = 'dot ok';
     cam.statusText.textContent = `${settings.width || '?'}×${settings.height || '?'}`;
     cam.resMetric.textContent = `${settings.width || '?'}×${settings.height || '?'}`;
