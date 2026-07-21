@@ -403,7 +403,22 @@ if (!window.IS_DISPLAY) {
   .photo-viewport{
     position:relative;
     aspect-ratio:1600/872;
-    width:100%; max-height:100%;
+    /*
+     * height:100% + width:auto is the correct axis order when the stage is
+     * always wider than the photo ratio (true for both Capture and Display:
+     * stage ratios measured at ~2.6 and ~2.0, both wider than photo's 1.83).
+     * aspect-ratio then sets width = height × 1.83 from a definite height.
+     *
+     * The earlier width:100% + max-height:100% approach is broken: CSS will
+     * cap height via max-height but does NOT reduce width back to maintain
+     * the ratio — so both axes run independently and the ratio is lost.
+     *
+     * max-width:100% guards the edge case where stage ever becomes narrower
+     * than 1.83:1 (e.g. portrait window) — in that case width is clamped and
+     * height auto-reduces via aspect-ratio (width→height direction works fine
+     * since height is auto in that scenario).
+     */
+    height:100%; width:auto; max-width:100%;
     overflow:hidden; background:#000;
   }
   .photo-layer{
